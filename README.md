@@ -1,2 +1,6 @@
-# Sigma3Castelao
-Fun Project
+# Sigma 3 : Castelõo Team Project
+
+This project proposes a modular, seat-integrated electronic system designed to enhance fan engagement and safety in football stadiums. The system is structured around low-cost, robust seat nodes connected via a wired CAN network to a local section hub, which communicates wirelessly with a central control server. This architecture enables reliable, scalable deployment across large stadiums while minimising per-seat hardware cost and complexity.
+Each seat node incorporates occupancy sensing, LED-based visual output, audio feedback, and simple user inputs to support interactive entertainment features such as live voting, coordinated lighting effects, and fan participation events. A dedicated safety mode provides high-visibility evacuation guidance and audible alerts, prioritising reliability over optional features.
+To address diverse fan preferences and commercial considerations, the system is designed as a tiered platform, offering a durable base seat configuration alongside optional premium add-ons such as displays and enhanced interaction. This software-driven, hardware-minimal approach allows flexible feature expansion while maintaining sustainability, energy efficiency, and long-term reliability
+
