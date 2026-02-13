@@ -17,3 +17,15 @@ This controller will consist of 2 main components: a Raspberry Pi 3B+ and a RS48
 The prototyping and construction methods will start with building a strong codebase to build many of the other features on top of. This means getting functional CAN interface libraries for the Raspberry Pi and getting the MQTT Wi-Fi protocol communication working with the server, as well as the RTP over UDP protocol for the audio streaming. After all basic communications works well, I can build the actual CAN frame generator, Audio processor, and all other features mentioned above.
 
 Testing for this module will be performed in parallel with feature implementation to get a faster deployment time. This will be done by directly testing with other modules and thus tackling integration from the beginning.
+
+
+## Libraries for the CAN interface on the Raspberry Pi
+
+- wiringPI, bcm2835, python: Needed to test demo code
+- we also need python-can to  interface with the socketCAN linux driver. The following link takes you to the documentation of the python-can library, specifically to the socket CAN page which we are going to be interfacing with:
+
+[Link for SocketCAN implementation in python-can](https://python-can.readthedocs.io/en/stable/interfaces/socketcan.html)
+
+[Link for User Manual](https://files.waveshare.com/upload/2/29/RS485-CAN-HAT-user-manuakl-en.pdf)
+
+[Link for waveshare page on the product](https://www.waveshare.com/wiki/RS485_CAN_HAT#Demo_code)
