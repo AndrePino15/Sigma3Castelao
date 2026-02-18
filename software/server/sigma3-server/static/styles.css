@@ -1,0 +1,35 @@
+:root { --bg:#f6f7fb; --card:#ffffff; --text:#111; --muted:#666; }
+body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:var(--bg); color:var(--text); }
+.topbar { display:flex; align-items:center; justify-content:space-between; padding:20px 26px; }
+.pill { background:#111; color:#fff; padding:8px 12px; border-radius:999px; font-size:14px; }
+.grid { display:grid; gap:18px; padding:0 26px 26px; grid-template-columns: 1fr 1fr; }
+.card { background:var(--card); border-radius:16px; padding:18px; box-shadow:0 8px 20px rgba(0,0,0,.06); }
+.wide { grid-column: 1 / -1; }
+h1 { margin:0; font-size:28px; }
+h2 { margin:0 0 12px; font-size:18px; }
+h3 { margin:8px 0 10px; font-size:16px; }
+.kv { display:grid; grid-template-columns: 90px 1fr; gap:10px 12px; }
+.k { color:var(--muted); }
+.v { word-break:break-all; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+.muted { color:var(--muted); font-size:14px; }
+.row { display:flex; gap:10px; align-items:center; margin:10px 0; }
+input, select { padding:10px 10px; border-radius:10px; border:1px solid #ddd; font-size:14px; }
+.small { width:110px; }
+.tiny { width:70px; }
+.spacer { flex:1; }
+.btn { border:none; padding:10px 14px; border-radius:12px; font-weight:600; cursor:pointer; }
+.btn.blue { background:#1e5eff; color:#fff; }
+.btn.green { background:#1e8e3e; color:#fff; }
+.btn.yellow { background:#f4b400; color:#111; }
+.btn.dark { background:#111; color:#fff; }
+.btn.purple { background:#6f42c1; color:#fff; }
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+.flashwrap { padding:0 26px; }
+.flash { margin:8px 0; padding:10px 12px; border-radius:12px; font-size:14px; }
+.flash.ok { background:#e7f7ee; color:#0c4a2a; border:1px solid #bfe8cf; }
+.flash.err { background:#fde8e8; color:#7f1d1d; border:1px solid #f8b4b4; }
+.previewWrap { overflow:auto; border-radius:14px; border:1px solid #eee; background:#fff; }
+#stadiumCanvas { display:block; width:100%; height:auto; }
+.previewHeader { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; }
