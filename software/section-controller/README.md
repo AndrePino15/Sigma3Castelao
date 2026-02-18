@@ -29,3 +29,20 @@ Testing for this module will be performed in parallel with feature implementatio
 [Link for User Manual](https://files.waveshare.com/upload/2/29/RS485-CAN-HAT-user-manuakl-en.pdf)
 
 [Link for waveshare page on the product](https://www.waveshare.com/wiki/RS485_CAN_HAT#Demo_code)
+
+
+## Structure of section controller section
+
+section_controller_pi/
+  main.py
+  canbus/
+    __init__.py
+    interface.py      # CanInterface (plumbing only)
+    protocol.py       # pack/unpack frames (your spec)
+    types.py          # enums/constants (MsgType etc.)
+  app/
+    bridge.py         # MQTT<->CAN logic later
+
+## Libraries used in the different modules and reason for their use
+
+
