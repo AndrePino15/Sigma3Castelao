@@ -1,0 +1,25 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets / runtime config
+.env
+.env.*
+api key.txt
+FIXTURE.txt
+
+# Logs
+*.log
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
