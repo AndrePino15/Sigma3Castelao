@@ -8,6 +8,20 @@ It contains:
 - MQTT bridge for seat commands/telemetry
 - API-Football integration with in-app cache strategy
 
+## Replay Video Files (Required)
+
+The replay feature expects the following files to exist in the project root directory:
+- "goal.mp4"
+- "highlight.mp4"
+- "moment.mp4"
+
+These files are not included in this repository due to size limitations.
+
+To enable Replay functionality:
+Place 3 '.mp4' files with the names stated above (case-sensitive) in the same file directory as 'qt_gui.py'
+
+If these files are missing, the replay buttons will not function correctly.
+
 ## Requirements
 
 - Python 3.10+
