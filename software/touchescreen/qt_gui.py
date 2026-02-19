@@ -13,6 +13,10 @@ from PySide6.QtWidgets import (
     QLineEdit, QSpinBox, QGraphicsDropShadowEffect, QFrame, QScrollArea, QSizePolicy
 )
 
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtCore import QUrl
+
 
 import paho.mqtt.client as mqtt
 
@@ -108,6 +112,11 @@ class MqttBridge(QObject):
             self.sig_ack.emit(data)
         elif msg.topic == TOPIC_SAFETY:
             self.sig_safety.emit(data)
+        elif msg.topic == "stadium/broadcast/replay":
+            data = json.loads(msg.payload.decode())
+            video_url = data.get("url")
+            self.replay_page.play_video(video_url)
+            self.stack.setCurrentWidget(self.replay_page)
 
 class DragScrollArea(QScrollArea):
     # Enable click-and-drag scrolling for touch-style interaction.
@@ -679,6 +688,54 @@ class ReplayPage(BaseSubPage):
         self.content.addWidget(self.btn_last)
         self.content.addWidget(self.btn_goal)
         self.content.addWidget(self.btn_top)
+        self.content.addSpacing(20)
+        
+        self.video_widget = QVideoWidget()
+        self.player = QMediaPlayer()
+        self.audio = QAudioOutput()
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video_widget)
+        
+
+        video_row = QHBoxLayout()
+        video_row.addStretch(1)
+        video_row.addWidget(self.video_widget)
+        video_row.addStretch(1)
+
+        self.content.addLayout(video_row)
+
+        self.btn_last.clicked.connect(lambda: self.play_video("highlight.mp4"))
+        self.btn_goal.clicked.connect(lambda: self.play_video("goal.mp4"))
+        self.btn_top.clicked.connect(lambda: self.play_video("moment.mp4"))
+
+    def play_video(self,filename):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtWidgets import QWidget, QVBoxLayout
+        import os
+
+        path = os.path.abspath(filename)
+        self.video_widget.hide()
+
+        self.fullscreen_window = QWidget()
+        self.fullscreen_window.setWindowFlag(Qt.Window)
+        self.fullscreen_window.setWindowState(Qt.WindowFullScreen)
+        layout = QVBoxLayout()
+        self.fullscreen_video = QVideoWidget()
+        layout.addWidget(self.fullscreen_video)
+        self.fullscreen_window.setLayout(layout)
+        
+        self.player.setVideoOutput(self.fullscreen_video)
+        self.player.setSource(QUrl.fromLocalFile(path))
+        self.player.play()
+        self.fullscreen_video.mousePressEvent = self.exit_fullscreen
+        self.fullscreen_window.show()
+        
+    def exit_fullscreen(self, event=None):
+        self.player.stop()
+        if hasattr(self, "fullscreen_window"):
+            self.fullscreen_window.close()
+        
+        self.player.setVideoOutput(self.video_widget)
 
 class InfoPage(BaseSubPage):
     def __init__(self):
