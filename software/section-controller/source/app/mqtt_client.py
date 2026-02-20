@@ -39,9 +39,9 @@ class MqttClient:
         keepalive: int = 60,
         rx_maxsize: int = 0,  # 0 = infinite
     ) -> None:
-        self.broker_host = broker_host
-        self.broker_port = broker_port
-        self.keepalive = keepalive     # this is the interval that the client will ping the broker to keep the connection alive
+        self.broker_host: int = broker_host
+        self.broker_port: int = broker_port
+        self.keepalive: int = keepalive     # this is the interval that the client will ping the broker to keep the connection alive
 
         self.rx_queue: "queue.Queue[MqttEvent]" = queue.Queue(maxsize=rx_maxsize)
 
@@ -105,6 +105,9 @@ class MqttClient:
         """
         self._stop_event.clear()
         self._connected_event.clear()
+
+        print(f"[DEBUG] broker_host={self.broker_host!r} ({type(self.broker_host)}), "
+                f"broker_port={self.broker_port!r} ({type(self.broker_port)})")
 
         # connect() is non-blocking-ish, but actual connection is handled by loop_start()
         self._client.connect(self.broker_host, self.broker_port, keepalive=self.keepalive)
