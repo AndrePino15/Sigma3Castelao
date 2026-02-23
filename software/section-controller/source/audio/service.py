@@ -1,3 +1,11 @@
+"""AudioService supervisor for the process-isolated audio worker.
+
+This module runs in the main process and is responsible for starting, stopping,
+and supervising ``audio.runner`` as a subprocess. It deliberately does not
+contain audio pipeline logic; the worker process owns stream/fallback behavior.
+Thread-safe status snapshots are exposed to the rest of the application.
+"""
+
 from __future__ import annotations
 
 import dataclasses
@@ -18,7 +26,23 @@ _UNSET = object()
 
 
 class AudioService:
+    """Supervisor for the audio worker subprocess.
+
+    Responsibilities:
+    - spawn ``audio.runner`` in a separate process
+    - stop it cleanly on application shutdown
+    - monitor unexpected exits and restart with backoff
+    - report a thread-safe ``AudioStatus`` snapshot
+
+    Invariant: this class manages process lifecycle only; it does not implement
+    stream/fallback switching or GStreamer pipeline decisions.
+    """
+
     def __init__(self, config: AudioConfig, logger: logging.Logger | None = None) -> None:
+        """Initialize the supervisor state and default status snapshot.
+
+        The worker process is not started here; call ``start()`` explicitly.
+        """
         self._config = config
         self._logger = logger or LOGGER
         self._lock = threading.Lock()
@@ -41,6 +65,11 @@ class AudioService:
         self._runner_module_cmd = [sys.executable, "-m", "audio.runner"]
 
     def start(self) -> None:
+        """Start the audio worker and monitor thread if not already running.
+
+        Thread-safe no-op when the service is already started. This also resets
+        the intentional-stop flag so the monitor may resume crash restarts.
+        """
         with self._lock:
             if self._started:
                 return
@@ -59,6 +88,11 @@ class AudioService:
         self._ensure_monitor_thread()
 
     def stop(self) -> None:
+        """Stop the audio worker and monitor thread cleanly.
+
+        This method sets ``_stopping`` before terminating the subprocess so the
+        monitor thread does not interpret intentional shutdown as a crash.
+        """
         with self._lock:
             if not self._started and self._proc is None:
                 self._set_status_locked(
@@ -90,10 +124,15 @@ class AudioService:
             )
 
     def status(self) -> AudioStatus:
+        """Return a copy of the current audio status snapshot.
+
+        A copy is returned so callers cannot mutate internal shared state.
+        """
         with self._lock:
             return dataclasses.replace(self._status)
 
     def _ensure_monitor_thread(self) -> None:
+        """Create and start the background monitor thread once per service run."""
         with self._lock:
             if self._monitor_thread is not None and self._monitor_thread.is_alive():
                 return
@@ -106,6 +145,11 @@ class AudioService:
         thread.start()
 
     def _build_runner_command(self) -> tuple[list[str], Path]:
+        """Build the worker subprocess command and working directory.
+
+        The worker is always launched in auto mode (``--mode stream``), which
+        means it prefers RTP stream and self-manages fallback output.
+        """
         command = [
             *self._runner_module_cmd,
             "--mode",
@@ -116,6 +160,12 @@ class AudioService:
         return command, self._source_root
 
     def _build_runner_env(self, cwd: Path) -> dict[str, str]:
+        """Build a subprocess environment that can import ``audio.runner`` reliably.
+
+        ``cwd`` and ``PYTHONPATH`` both point at the ``source/`` directory so
+        ``python -m audio.runner`` works whether the parent app is launched from
+        repo root or directly from ``source/``.
+        """
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         cwd_str = str(cwd)
@@ -128,6 +178,13 @@ class AudioService:
         return env
 
     def _spawn_runner(self) -> None:
+        """Spawn the worker subprocess and update service status.
+
+        Side effects:
+        - sets status to ``STARTING`` before spawn
+        - stores the child ``Popen`` handle on success
+        - records an error and increments restart count on spawn failure
+        """
         with self._lock:
             if not self._started:
                 return
@@ -157,6 +214,10 @@ class AudioService:
             )
 
     def _stop_process(self, proc: Optional[subprocess.Popen[bytes]]) -> None:
+        """Terminate a worker subprocess with a short grace period.
+
+        Safe to call with ``None`` or an already-exited process.
+        """
         if proc is None:
             return
 
@@ -178,6 +239,13 @@ class AudioService:
             self._logger.exception("Error while stopping audio runner pid=%s", proc.pid)
 
     def _monitor_loop(self) -> None:
+        """Monitor the worker subprocess and restart it on unexpected exits.
+
+        Concurrency notes:
+        - reads/writes shared status and process references under ``_lock``
+        - exits promptly when ``_stop_event`` is set
+        - respects ``_stopping`` to avoid restart races during intentional stop
+        """
         error_threshold = 10
         while not self._stop_event.is_set():
             with self._lock:
@@ -187,6 +255,8 @@ class AudioService:
             if not started:
                 break
             if stopping:
+                # ``stop()`` sets ``_stopping`` before terminating the child so the
+                # monitor never treats intentional shutdown as a crash.
                 break
             if proc is None:
                 with self._lock:
@@ -241,6 +311,10 @@ class AudioService:
                 self._backoff_s = min(self._backoff_s * 2.0, 10.0)
 
     def _wait_or_stop(self, seconds: float) -> bool:
+        """Sleep interruptibly until timeout or service shutdown.
+
+        Returns ``True`` when shutdown was requested.
+        """
         return self._stop_event.wait(seconds)
 
     def _set_status_locked(
@@ -251,6 +325,11 @@ class AudioService:
         last_error: object = _UNSET,
         backoff_s: Optional[float] | None = None,
     ) -> None:
+        """Mutate the internal status snapshot while holding ``_lock``.
+
+        ``last_error`` uses a sentinel so callers can choose whether to preserve
+        the existing error message or explicitly clear/update it.
+        """
         self._status.state = state
         self._status.pid = pid
         if last_error is not _UNSET:

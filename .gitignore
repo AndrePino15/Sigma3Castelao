@@ -1,0 +1,55 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Logs
+logs/
+*.log
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Build / Temporary
+# =========================
+build/
+dist/
+*.tmp
+*.swp
+
+# =========================
+# Jupyter (if used)
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Firmware / Embedded builds (if applicable)
+# =========================
+*.hex
+*.elf
+*.bin
+*.map
+*.o
+
+# =========================
+# Test coverage
+# =========================
+.coverage
+htmlcov/

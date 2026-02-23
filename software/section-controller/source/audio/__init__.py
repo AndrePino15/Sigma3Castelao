@@ -1,7 +1,11 @@
-"""Audio subsystem package (Phase 1).
+"""Audio subsystem package.
 
-Environment variables are read via ``AudioConfig.from_env()`` (``SC_AUDIO_*``).
-Phase 2 will implement the GStreamer RTP -> ALSA pipeline in a process-isolated worker.
+This package defines the public audio-facing API used by ``main.py`` for service
+orchestration while keeping runtime audio behavior inside the worker process.
+``AudioService`` supervises the worker lifecycle and restart policy, and
+``AudioConfig`` reads ``SC_AUDIO_*`` environment variables.
+The worker implementation lives in ``audio.runner`` and owns stream/fallback
+audio behavior.
 """
 
 from .config import AudioConfig
