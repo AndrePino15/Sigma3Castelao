@@ -27,11 +27,11 @@ class Bridge:
 
         # Transport objects created in the constructor
         self.mqtt: Optional[MqttClient] = None
-        self.can: Optional[CanInterface] = None
+        self.can: Optional[CanInterface] =None
 
         # internal variables configuration
         self.broker_host = broker_host
-        self.broker_port = broker_port
+        self.broker_port = broker_port 
         self.can_channel = can_channel
         self.can_bustype = can_bustype
 
@@ -53,8 +53,9 @@ class Bridge:
         '''
         Docstring for start
         
-        This method is required to be called inside main.py to initialise the controller and both the MQTT Client and CAN bus
-        Its main functionalities are: connect MQTT, start CAN RX threads and apply CAN filters.
+        This method is required to be called inside main.py to initialise the controller and both the MQTT Client and CAN bus.
+
+        Its main functionalities are: connecting MQTT, starting CAN RX threads and apply CAN filters.
         '''
         # Create MQTT client
         self.mqtt = MqttClient(broker_host=self.broker_host,
@@ -73,8 +74,12 @@ class Bridge:
         if not connection_success:
             # For now, we don't crash; we go DEGRADED and keep CAN running.
             self.mode = OperationMode.DEGRADED
+            print(f"Connenction to {self.broker_host}:{self.broker_port} FAILED.")
         else:
             self.mqtt.subscribe(self.subscriptions)
+            print(f"Successfully subscribed to {control_topic(self.section_id)}.")
+            print(f"Successfully subscribed to {led_topic(self.section_id)}.")
+            print(f"Successfully subscribed to {emergency_topic(self.section_id)}.")
 
         # Apply CAN filters to reduce load and seat->ctrl status range plus emergency/broadcast IDs
         filters = [
