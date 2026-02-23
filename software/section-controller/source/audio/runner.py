@@ -1,3 +1,12 @@
+"""Audio worker process entrypoint and stream/fallback control loop.
+
+This module runs in a separate process supervised by ``audio.service``. It owns
+all audio runtime behavior: building GStreamer commands, spawning pipelines,
+handling signals, and switching between stream and fallback output.
+The worker is intentionally self-healing so the supervisor only needs to restart
+the process when the worker itself crashes.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +27,7 @@ RETRY_BACKOFF_MAX_S = 5.0
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Create the CLI parser for the audio worker process."""
     parser = argparse.ArgumentParser(description="Audio worker process (Phase 3 stream/fallback runner)")
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--mode", choices=["fallback", "stream"], default="fallback")
@@ -26,6 +36,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _terminate(proc: subprocess.Popen | None) -> None:
+    """Terminate a child pipeline process with a short grace period.
+
+    This helper is safe to call repeatedly and is used by both normal shutdown
+    and signal handlers.
+    """
     if proc is None or proc.poll() is not None:
         return
     proc.terminate()
@@ -40,11 +55,17 @@ def _terminate(proc: subprocess.Popen | None) -> None:
 
 
 def _spawn_pipeline(cmd: list[str], label: str) -> subprocess.Popen:
+    """Spawn a GStreamer pipeline process and log a concise command line."""
     LOGGER.info("Starting %s pipeline: %s", label, " ".join(cmd))
     return subprocess.Popen(cmd)
 
 
 def _wait_for_exit_or_stop(proc: subprocess.Popen, stop_event: threading.Event, poll_s: float = 0.2) -> int | None:
+    """Poll a child process until it exits or shutdown is requested.
+
+    Returns the child exit code, or ``None`` if ``stop_event`` is set first.
+    The polling loop keeps signal-driven shutdown responsive without busy-waiting.
+    """
     while not stop_event.is_set():
         exit_code = proc.poll()
         if exit_code is not None:
@@ -59,6 +80,12 @@ def _wait_for_stability_or_exit(
     stability_s: float,
     poll_s: float = 0.1,
 ) -> tuple[bool, int | None]:
+    """Probe whether a stream process remains alive for a stability window.
+
+    Returns ``(True, None)`` when the pipeline survives for ``stability_s``.
+    Returns ``(False, exit_code)`` if it exits early, or ``(False, None)`` when
+    shutdown is requested before a conclusion is reached.
+    """
     deadline = time.monotonic() + stability_s
     while not stop_event.is_set():
         exit_code = proc.poll()
@@ -76,6 +103,12 @@ def _wait_until_retry(
     stop_event: threading.Event,
     delay_s: float,
 ) -> tuple[bool, subprocess.Popen | None]:
+    """Wait for the next stream retry deadline while keeping fallback monitored.
+
+    Returns a tuple ``(stop_requested, fallback_proc)``. If the fallback process
+    exits during the wait, ``fallback_proc`` is returned as ``None`` so the caller
+    can relaunch it before attempting another stream probe.
+    """
     deadline = time.monotonic() + delay_s
     proc = fallback_proc
 
@@ -102,6 +135,12 @@ def _run_fallback_only(
     stop_event: threading.Event,
     active_procs: list[subprocess.Popen | None],
 ) -> int:
+    """Run the fallback pipeline only and propagate its exit code.
+
+    This mode is useful for testing the fallback path in isolation. On user
+    shutdown the function returns ``0`` after terminating the child process.
+    ``active_procs`` is updated so the signal handler can terminate the child.
+    """
     fallback_proc: subprocess.Popen | None = None
     try:
         fallback_proc = _spawn_pipeline(cmd, "fallback")
@@ -131,6 +170,18 @@ def _run_auto_mode(
     stop_event: threading.Event,
     active_procs: list[subprocess.Popen | None],
 ) -> int:
+    """Run auto mode: prefer stream, keep fallback alive, and retry stream.
+
+    Behavior summary:
+    - Start stream first and use it as long as the process stays alive.
+    - On stream failure/exit, switch to fallback immediately.
+    - While fallback runs, probe stream using a short stability window and
+      exponential backoff before switching back.
+
+    This function intentionally treats "stream loss" as pipeline exit only. It
+    does not implement deep packet-level health detection when the process stays
+    alive but audio packets stop arriving.
+    """
     stream_proc: subprocess.Popen | None = None
     fallback_proc: subprocess.Popen | None = None
     retry_backoff_s = RETRY_BACKOFF_MIN_S
@@ -203,6 +254,7 @@ def _run_auto_mode(
                 except Exception as exc:
                     LOGGER.warning("stream probe failed to start: %s", exc)
                     active_procs[0] = None
+                    # Stability probing avoids flapping back to stream on short-lived starts.
                     retry_backoff_s = min(retry_backoff_s * 2.0, RETRY_BACKOFF_MAX_S)
                     continue
 
@@ -220,6 +272,7 @@ def _run_auto_mode(
                     )
                     _terminate(probe_proc)
                     active_procs[0] = None
+                    # Back off retries while fallback keeps safe output active.
                     retry_backoff_s = min(retry_backoff_s * 2.0, RETRY_BACKOFF_MAX_S)
                     continue
 
@@ -262,6 +315,16 @@ def _run_auto_mode(
 
 
 def main() -> int:
+    """Run the audio worker CLI.
+
+    Exit codes:
+    - ``0``: clean shutdown or successful ``--dry-run``
+    - ``2``: invalid configuration / pipeline build error / missing gst-launch
+    - child exit code: in ``--mode fallback`` when the fallback pipeline exits
+
+    In ``--mode stream`` (auto mode), the worker is designed to keep running and
+    self-heal by switching between stream and fallback until shutdown.
+    """
     args = _build_parser().parse_args()
 
     logging.basicConfig(
@@ -298,6 +361,7 @@ def main() -> int:
     active_procs: list[subprocess.Popen | None] = [None, None]
 
     def _handle_shutdown(signum: int, _frame: object) -> None:
+        """Signal handler that stops restart loops and terminates active pipelines."""
         LOGGER.info("received signal %s, shutting down audio worker", signum)
         stop_event.set()
         _terminate(active_procs[0])
