@@ -23,14 +23,16 @@ import paho.mqtt.client as mqtt
 
 
 # ====== Config ======
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BROKER_HOST = os.getenv("MQTT_HOST", "127.0.0.1").strip() or "127.0.0.1"
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
-SEAT_ID = "A3-12"
+SEAT_ID = os.getenv("SEAT_ID", "A3-12").strip() or "A3-12"
 
 TOPIC_TELE = f"stadium/seat/{SEAT_ID}/telemetry"
 TOPIC_CMD  = f"stadium/seat/{SEAT_ID}/cmd"
 TOPIC_ACK  = f"stadium/seat/{SEAT_ID}/ack"
 TOPIC_SAFETY = "stadium/broadcast/safety"
+TOPIC_REPLAY = "stadium/broadcast/replay"
 
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "").strip()
@@ -59,6 +61,7 @@ class MqttBridge(QObject):
     sig_telemetry = Signal(dict)
     sig_ack = Signal(dict)
     sig_safety = Signal(dict)
+    sig_replay = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -97,6 +100,7 @@ class MqttBridge(QObject):
         client.subscribe(TOPIC_TELE, qos=0)
         client.subscribe(TOPIC_ACK, qos=1)
         client.subscribe(TOPIC_SAFETY, qos=1)
+        client.subscribe(TOPIC_REPLAY, qos=1)
 
     def _on_disconnect(self, client, userdata, rc):
         self.sig_connected.emit(False)
@@ -113,11 +117,8 @@ class MqttBridge(QObject):
             self.sig_ack.emit(data)
         elif msg.topic == TOPIC_SAFETY:
             self.sig_safety.emit(data)
-        elif msg.topic == "stadium/broadcast/replay":
-            data = json.loads(msg.payload.decode())
-            video_url = data.get("url")
-            self.replay_page.play_video(video_url)
-            self.stack.setCurrentWidget(self.replay_page)
+        elif msg.topic == TOPIC_REPLAY:
+            self.sig_replay.emit(data)
 
 class DragScrollArea(QScrollArea):
     # Enable click-and-drag scrolling for touch-style interaction.
@@ -670,6 +671,8 @@ class BaseSubPage(QWidget):
         super().paintEvent(event)
 
 class ReplayPage(BaseSubPage):
+    sig_request_replay = Signal(str)
+
     def __init__(self):
         super().__init__("Replay")
         self.set_background_enabled(True)
@@ -689,6 +692,10 @@ class ReplayPage(BaseSubPage):
         self.content.addWidget(self.btn_last)
         self.content.addWidget(self.btn_goal)
         self.content.addWidget(self.btn_top)
+        self.status = QLabel("")
+        self.status.setStyleSheet("color: white; font: 700 16px 'Arial';")
+        self.status.setAlignment(Qt.AlignCenter)
+        self.content.addWidget(self.status)
         self.content.addSpacing(20)
         
         self.video_widget = QVideoWidget()
@@ -703,13 +710,19 @@ class ReplayPage(BaseSubPage):
         video_row.addStretch(1)
         self.content.addLayout(video_row)
 
-        self.btn_last.clicked.connect(lambda: self.play_video("highlight.mp4"))
-        self.btn_goal.clicked.connect(lambda: self.play_video("goal.mp4"))
-        self.btn_top.clicked.connect(lambda: self.play_video("moment.mp4"))
+        self.btn_last.clicked.connect(lambda: self.sig_request_replay.emit("highlight"))
+        self.btn_goal.clicked.connect(lambda: self.sig_request_replay.emit("goal"))
+        self.btn_top.clicked.connect(lambda: self.sig_request_replay.emit("moment"))
 
-    def play_video(self,filename):
+    def play_video(self, filename):
 
-        path = os.path.abspath(filename)
+        source = str(filename).strip()
+        if source.startswith("http://") or source.startswith("https://"):
+            media_url = QUrl(source)
+        else:
+            path = source if os.path.isabs(source) else os.path.join(BASE_DIR, source)
+            path = os.path.abspath(path)
+            media_url = QUrl.fromLocalFile(path)
         
         self.fullscreen_window = QWidget()
         self.fullscreen_window.setWindowTitle("Video Player")
@@ -730,7 +743,7 @@ class ReplayPage(BaseSubPage):
         self.exit_button.show()
 
         self.player.setVideoOutput(self.fullscreen_video)
-        self.player.setSource(QUrl.fromLocalFile(path))
+        self.player.setSource(media_url)
         self.fullscreen_window.show()
         self.player.play()
        
@@ -742,6 +755,9 @@ class ReplayPage(BaseSubPage):
         if hasattr(self, "exit_button"):
             self.exit_button.close()
         self.player.setVideoOutput(self.video_widget)
+
+    def set_status(self, text: str):
+        self.status.setText(text)
 
 class InfoPage(BaseSubPage):
     def __init__(self):
@@ -968,6 +984,9 @@ class MainWindow(QMainWindow):
         self.bridge.sig_telemetry.connect(self._on_telemetry)
         self.bridge.sig_ack.connect(self._on_ack)
         self.bridge.sig_safety.connect(self._on_safety)
+        self.bridge.sig_replay.connect(self._on_replay)
+
+        self.page_replay.sig_request_replay.connect(self._request_replay)
 
         # Heartbeat timer for stale detection
         self.timer = QTimer(self)
@@ -1059,6 +1078,34 @@ class MainWindow(QMainWindow):
             subprocess.Popen(["cmd", "/c", "start", "osk"])
         except Exception as e:
             QMessageBox.warning(self, "Keyboard", f"Failed to open keyboard: {e}")
+
+    def _request_replay(self, clip: str):
+        self.bridge.publish_cmd("REPLAY", 1, payload={"clip": clip})
+        self.stack.setCurrentWidget(self.page_replay)
+        self.page_replay.set_status(f"Requesting {clip} replay from server...")
+
+    def _on_replay(self, d: dict):
+        clip = str(d.get("clip", "")).strip().lower()
+        url = str(d.get("url", "")).strip()
+        if not url:
+            self.page_replay.set_status("Replay message missing URL.")
+            return
+
+        replay_seat = str(d.get("seat_id", "")).strip()
+        if replay_seat and replay_seat != SEAT_ID:
+            return
+
+        expires_at = d.get("expires_at")
+        if isinstance(expires_at, (int, float)) and time.time() > float(expires_at):
+            self.page_replay.set_status("Replay URL expired.")
+            return
+
+        if clip and clip in {"goal", "highlight", "moment"}:
+            self.page_replay.set_status(f"Playing {clip} replay...")
+        else:
+            self.page_replay.set_status("Playing replay...")
+        self.stack.setCurrentWidget(self.page_replay)
+        self.page_replay.play_video(url)
 
     def _stale_check(self):
         if self.last_rx_ms == 0:
