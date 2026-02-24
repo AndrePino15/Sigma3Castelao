@@ -2,7 +2,8 @@ import app.mqtt_client as mqtt
 from app.mqtt_topics import  control_topic, emergency_topic, led_topic, status_topic
 import time 
 
-if __name__ == "__main__":
+s=True
+if s:
     # creation of controller instance 
     section_id = 12345
     IP_address = "172.20.10.4"
