@@ -16,14 +16,14 @@ def main() -> int:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
-    ip_address = "172.20.10.4"
+    """ ip_address = "172.20.10.4"
     controller = Bridge(
         section_id=12345,
         broker_host=ip_address,
         broker_port=1883,
         can_channel="can0",
         can_bustype="socketcan",
-    )
+    ) """
 
     audio_config = AudioConfig.from_env()
     audio_service = AudioService(audio_config, logger=logging.getLogger("audio.service"))
@@ -33,7 +33,7 @@ def main() -> int:
     def _handle_shutdown(signum: int, _frame: object) -> None:
         LOGGER.info("Received signal %s, shutting down services", signum)
         shutdown_event.set()
-        controller.stop()
+        # controller.stop()
         audio_service.stop()
 
     signal.signal(signal.SIGINT, _handle_shutdown)
@@ -48,11 +48,11 @@ def main() -> int:
         if audio_config.enable and audio_config.autostart:
             audio_service.start()
 
-        controller.start()
-        controller.run()
+        #controller.start()
+        #controller.run()
     finally:
         shutdown_event.set()
-        controller.stop()
+        #controller.stop()
         audio_service.stop()
 
     return 0

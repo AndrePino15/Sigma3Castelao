@@ -65,7 +65,7 @@ def build_fallback_cmd(config: AudioConfig) -> List[str]:
         return pipeline
 
     if config.fallback_mode == "none":
-        raise ValueError("Fallback mode 'none' not supported in Phase 2")
+        raise ValueError("Fallback mode 'none' not supported.")
 
     raise ValueError(f"Unsupported fallback mode {config.fallback_mode!r}")
 
@@ -73,12 +73,12 @@ def build_fallback_cmd(config: AudioConfig) -> List[str]:
 def build_stream_cmd(config: AudioConfig) -> List[str]:
     """Build the RTP/Opus receive pipeline command expected by the worker.
 
-    Phase 2/3 supports Opus only. The resulting command receives RTP over UDP,
+    The pipeline supports Opus only. The resulting command receives RTP over UDP,
     applies a jitter buffer using ``latency_target_ms``, decodes audio, and
     outputs to ALSA.
     """
     if config.codec.lower() != "opus":
-        raise ValueError("Only opus supported for stream in Phase 2")
+        raise ValueError("Only opus supported for stream in the pipeline.")
 
     sink_args = _build_alsasink_args(config.alsa_device)
     caps = (
@@ -106,6 +106,3 @@ def build_stream_cmd(config: AudioConfig) -> List[str]:
         "!",
         *sink_args,
     ]
-
-
-# TODO(Phase 3): integrate stream/fallback runner control.
