@@ -5,8 +5,11 @@ from app.mqtt_topics import control_topic, emergency_topic, led_topic, status_to
 from canbus.types import MessageTypes, OperationMode
 
 import can
+import logging
 from typing import Any, Dict, Optional, List, Tuple
 import time
+
+LOGGER = logging.getLogger(__name__)
 
 class Bridge:
     """
@@ -20,7 +23,7 @@ class Bridge:
                  broker_host: str,
                  broker_port: int = 1883,
                  can_channel: str = "can0",
-                 can_bustype: str = "socketcan") -> None:
+                 can_interface: str = "socketcan") -> None:
         
         self.section_id = section_id
         self.mode = OperationMode.NORMAL
@@ -33,14 +36,14 @@ class Bridge:
         self.broker_host = broker_host
         self.broker_port = broker_port 
         self.can_channel = can_channel
-        self.can_bustype = can_bustype
+        self.can_interface = can_interface
 
         # The int inside each tupple defines the QoS for the subscription to that topic, which is a parameter 
         # from the MQTT protocol itself. 
         # QoS: emergency/control = 1 (more reliable), LED = 0 (best-effort)
         self.subscriptions: list[tuple[str, int]] = [(control_topic(self.section_id), 0),
                                               (led_topic(self.section_id), 0), 
-                                              (emergency_topic(self.section_id), 1)]
+                                              (emergency_topic(), 1)]
         
         # Where this controller publishes aggregated status
         self.status_topic = status_topic(self.section_id)
@@ -51,12 +54,18 @@ class Bridge:
 
     def start(self) -> None:
         '''
-        Docstring for start
-        
         This method is required to be called inside main.py to initialise the controller and both the MQTT Client and CAN bus.
 
         Its main functionalities are: connecting MQTT, starting CAN RX threads and apply CAN filters.
         '''
+        LOGGER.info(
+            "Bridge starting: section_id=%s broker=%s:%s can=%s/%s",
+            self.section_id,
+            self.broker_host,
+            self.broker_port,
+            self.can_channel,
+            self.can_interface,
+        )
         # Create MQTT client
         self.mqtt = MqttClient(broker_host=self.broker_host,
                                broker_port=self.broker_port,
@@ -65,21 +74,32 @@ class Bridge:
                                rx_maxsize=256)
 
         # Create CAN interface
-        self.can = CanInterface(channel=self.can_channel,
-                                bustype=self.can_bustype,
-                                rx_maxsize=256)
+        try:
+            self.can = CanInterface(channel=self.can_channel,
+                                    interface=self.can_interface,
+                                    rx_maxsize=256)
+        except Exception:
+            LOGGER.exception(
+                "Failed to initialize CAN interface %s/%s",
+                self.can_channel,
+                self.can_interface,
+            )
+            raise
         
         # Connect MQTT
-        connection_success = self.mqtt.connect(timeout=5.0)
+        try:
+            LOGGER.info("Connecting MQTT client to %s:%s", self.broker_host, self.broker_port)
+            connection_success = self.mqtt.connect(timeout=5.0)
+        except Exception:
+            LOGGER.exception("MQTT connect raised an exception")
+            connection_success = False
         if not connection_success:
             # For now, we don't crash; we go DEGRADED and keep CAN running.
             self.mode = OperationMode.DEGRADED
-            print(f"Connenction to {self.broker_host}:{self.broker_port} FAILED.")
+            LOGGER.warning("Connection to %s:%s failed; continuing in DEGRADED mode", self.broker_host, self.broker_port)
         else:
+            LOGGER.info("MQTT connected; subscribing to %s topics", len(self.subscriptions))
             self.mqtt.subscribe(self.subscriptions)
-            print(f"Successfully subscribed to {control_topic(self.section_id)}.")
-            print(f"Successfully subscribed to {led_topic(self.section_id)}.")
-            print(f"Successfully subscribed to {emergency_topic(self.section_id)}.")
 
         # Apply CAN filters to reduce load and seat->ctrl status range plus emergency/broadcast IDs
         filters = [
@@ -91,8 +111,10 @@ class Bridge:
 
         # Start CAN RX thread (enqueues to self.can.rx_queue)
         self.can.start_rx(timeout=1.0)
+        LOGGER.info("CAN RX thread started")
 
         self._running = True
+        LOGGER.info("Bridge started successfully")
 
     def stop(self) -> None:
         """
@@ -103,10 +125,12 @@ class Bridge:
         if self.mqtt is not None:
             self.mqtt.disconnect()
             self.mqtt = None
+            LOGGER.info("MQTT Client disconnected")
 
         if self.can is not None:
             self.can.close()
             self.can = None
+            LOGGER.info("CAN bus disconnected")
 
 # ================Methods for handling of the MQTT Client and CAN Bus================
 
@@ -183,8 +207,6 @@ class Bridge:
                 if isinstance(enabled, bool):
                     self.mode = OperationMode.SAFETY if enabled else OperationMode.NORMAL
                 return
-
-            # Extend here with other control commands
             return
     
     def can_handle(self, msg: can.Message) -> None:
@@ -200,7 +222,7 @@ class Bridge:
         try:
             decoded = protocol.decode(msg)
         except Exception:
-            # Bad/unknown frame: ignore for now (or log later)
+            LOGGER.info("Unable to decode receive CAN msg: %s", msg)
             return
 
         # Publish a compact status message
@@ -217,6 +239,11 @@ class Bridge:
             payload["occupied"] = decoded["occupied"]
         if "uptime_s" in decoded:
             payload["uptime_s"] = decoded["uptime_s"]
+
+        try:
+            self.mqtt.publish_json(self.status_topic, payload, qos=0, retain=False)
+        except Exception:
+            LOGGER.exception("Failed to publish CAN status to MQTT topic %s", self.status_topic)
 
     def run(self) -> None:
         """

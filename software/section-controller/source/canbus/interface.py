@@ -11,11 +11,11 @@ class CanInterface:
     This class keeps CAN plumbing separate from protocol/application logic.
     """
 
-    def __init__(self, channel: str = "can0", bustype: str = "socketcan", rx_maxsize: int = 0) -> None:
+    def __init__(self, channel: str = "can0", interface: str = "socketcan", rx_maxsize: int = 0) -> None:
         # with rx_maxsize = 0 the queue can be infinite
         self.channel = channel
-        self.bustype = bustype
-        self.bus = can.interface.Bus(channel=channel, bustype=bustype)
+        self.interface = interface
+        self.bus = can.interface.Bus(channel=channel, interface=interface)
 
         self.rx_queue: "queue.Queue[can.Message]" = queue.Queue(maxsize=rx_maxsize)
 

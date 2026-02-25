@@ -10,8 +10,11 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List, Tuple
+import logging
 
 import paho.mqtt.client as mqtt
+
+LOGGER = logging.getLogger(__name__)
 
 # the frozen parameter is set because we don't want to modify a received message. We use it as is to not change its content
 @dataclass(frozen=True)
@@ -130,6 +133,7 @@ class MqttClient:
         """
         for t, qos in topics:
             self._client.subscribe(t, qos=qos)
+            LOGGER.info("Successfuly subscribed to %s.", t)
 
     def publish_json(self, topic: str, payload: Dict[str, Any], qos: int = 0, retain: bool = False) -> None:
         data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)

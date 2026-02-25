@@ -28,7 +28,7 @@ RETRY_BACKOFF_MAX_S = 5.0
 
 def _build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser for the audio worker process."""
-    parser = argparse.ArgumentParser(description="Audio worker process (Phase 3 stream/fallback runner)")
+    parser = argparse.ArgumentParser(description="Audio worker process (stream/fallback runner)")
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--mode", choices=["fallback", "stream"], default="fallback")
     parser.add_argument("--dry-run", action="store_true", help="Print command(s) and exit")
@@ -39,14 +39,18 @@ def _terminate(proc: subprocess.Popen | None) -> None:
     """Terminate a child pipeline process with a short grace period.
 
     This helper is safe to call repeatedly and is used by both normal shutdown
-    and signal handlers.
+    and signal handlers. Basically a wrapper around the .terminate() and .kill() methods of the subprocess library.
     """
+    # The .poll() method checks a process without blocking and returns None if still running, 
+    # or the return code if it's done.
     if proc is None or proc.poll() is not None:
         return
+    # terminate() is a polite stop
     proc.terminate()
     try:
         proc.wait(timeout=2.0)
     except subprocess.TimeoutExpired:
+        # kill() is a forced stop
         proc.kill()
         try:
             proc.wait(timeout=1.0)
@@ -57,13 +61,15 @@ def _terminate(proc: subprocess.Popen | None) -> None:
 def _spawn_pipeline(cmd: list[str], label: str) -> subprocess.Popen:
     """Spawn a GStreamer pipeline process and log a concise command line."""
     LOGGER.info("Starting %s pipeline: %s", label, " ".join(cmd))
+    # subprocess.Popen() launches a process immediatelly and moves on, instead of waiting for it to finish like .run()
+    # method, making it better for this particular application.
     return subprocess.Popen(cmd)
 
 
 def _wait_for_exit_or_stop(proc: subprocess.Popen, stop_event: threading.Event, poll_s: float = 0.2) -> int | None:
     """Poll a child process until it exits or shutdown is requested.
 
-    Returns the child exit code, or ``None`` if ``stop_event`` is set first.
+    Returns the child exit code, or None if stop_event is set first.
     The polling loop keeps signal-driven shutdown responsive without busy-waiting.
     """
     while not stop_event.is_set():
@@ -76,16 +82,17 @@ def _wait_for_exit_or_stop(proc: subprocess.Popen, stop_event: threading.Event, 
 
 def _wait_for_stability_or_exit(
     proc: subprocess.Popen,
-    stop_event: threading.Event,
+    stop_event: threading.Event, # threading.Event is used as a safer way to use a flag checked by many threads
     stability_s: float,
     poll_s: float = 0.1,
 ) -> tuple[bool, int | None]:
-    """Probe whether a stream process remains alive for a stability window.
+    """Check whether a stream process remains alive for a stability window.
 
     Returns ``(True, None)`` when the pipeline survives for ``stability_s``.
     Returns ``(False, exit_code)`` if it exits early, or ``(False, None)`` when
     shutdown is requested before a conclusion is reached.
     """
+    # set up of the max "deadline" time for the stability check
     deadline = time.monotonic() + stability_s
     while not stop_event.is_set():
         exit_code = proc.poll()
@@ -105,9 +112,12 @@ def _wait_until_retry(
 ) -> tuple[bool, subprocess.Popen | None]:
     """Wait for the next stream retry deadline while keeping fallback monitored.
 
-    Returns a tuple ``(stop_requested, fallback_proc)``. If the fallback process
+    Returns a tuple (stop_requested, fallback_proc). If the fallback process
     exits during the wait, ``fallback_proc`` is returned as ``None`` so the caller
-    can relaunch it before attempting another stream probe.
+    can relaunch it before attempting another stream probe. 
+    This function is essentially a "smart sleep". Instead of just doing time.sleep(delay_s) 
+    between stream retries, it keeps one eye on the fallback process while it waits, so 
+    nothing falls through the cracks.
     """
     deadline = time.monotonic() + delay_s
     proc = fallback_proc
@@ -187,6 +197,7 @@ def _run_auto_mode(
     retry_backoff_s = RETRY_BACKOFF_MIN_S
 
     try:
+        # similar to _run_fallback_only() function. We are just starting the stream pipeline and handling any errors
         while not stop_event.is_set():
             try:
                 stream_proc = _spawn_pipeline(stream_cmd, "stream")
