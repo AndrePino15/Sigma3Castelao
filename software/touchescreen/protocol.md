@@ -15,7 +15,7 @@ Target display:
 - Keepalive: `60s`
 
 ## Identity
-- Seat/device id example: `A3-12`
+- Seat/device id example: `section1,row1,col1`
 - Client id suggestion:
   - GUI: `qt_gui_<seat_id>`
   - Server: `fake_server_<seat_id>` or backend-defined id
@@ -34,7 +34,7 @@ Example:
 {
   "ts": 1700000000.0,
   "mode": "RUN",
-  "device_id": "A3-12",
+  "device_id": "section1,row1,col1",
   "rssi": -55,
   "metric": 0.72,
   "msg": "Match: TeamA vs TeamB"
@@ -52,7 +52,7 @@ Example:
 ```json
 {
   "ts": 1700000000.0,
-  "device_id": "A3-12",
+  "device_id": "section1,row1,col1",
   "cmd": "ORDER",
   "value": 1,
   "payload": {

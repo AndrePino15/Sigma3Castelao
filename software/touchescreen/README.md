@@ -5,22 +5,8 @@ This project is a touchscreen-style Qt GUI built with PySide6.
 It contains:
 - Home page with animated menu and live match info panel
 - Replay / Order / Info / Admin / Safety pages
-- MQTT bridge for seat commands/telemetry
+- MQTT bridge for seat commands/telemetry/replay
 - API-Football integration with in-app cache strategy
-
-## Replay Video Files (Required)
-
-The replay feature expects the following files to exist in the project root directory:
-- "goal.mp4"
-- "highlight.mp4"
-- "moment.mp4"
-
-These files are not included in this repository due to size limitations.
-
-To enable Replay functionality:
-Place 3 '.mp4' files with the names stated above (case-sensitive) in the same file directory as 'qt_gui.py'
-
-If these files are missing, the replay buttons will not function correctly.
 
 ## Requirements
 
@@ -90,12 +76,125 @@ py fake_server.py
 py qt_gui.py
 ```
 
+### Optional: Run communication bridge module
+
+If you want the extra communication stack from GitHub version, run:
+
+```powershell
+$env:MQTT_HOST="127.0.0.1"
+$env:MQTT_PORT="1883"
+$env:SECTION_ID="12345"
+$env:SEAT_ID="section1,row1,col1"
+py main_touchscreen.py
+```
+
+Related files:
+- `main_touchscreen.py`
+- `bridge_touchscreen.py`
+- `mqtt_client_touchscreen.py`
+- `README_MQTT.txt`
+
+## Server-Pushed `fixture_id` (recommended for Raspberry Pi)
+
+Use a fixed API key on Raspberry Pi, and let server push `fixture_id` via MQTT.
+
+### 1) Server publishes current live fixture
+
+Publish to a retained topic so Raspberry Pi can read it anytime:
+
+```powershell
+mosquitto_pub -h <BROKER_IP> -p 1883 -t stadium/config/fixture_id -m "<live_fixture_id>" -r
+```
+
+### 2) Raspberry Pi uses `start_gui.sh`
+
+`start_gui.sh` subscribes once to `stadium/config/fixture_id`, exports `API_FIXTURE_ID`, then starts `qt_gui.py`.
+
+Prepare once on Raspberry Pi:
+
+```bash
+cd /home/dev/sigma3/touchscreen-module
+chmod +x start_gui.sh
+```
+
+If `mosquitto_sub` is missing:
+
+```bash
+sudo apt update
+sudo apt install -y mosquitto-clients
+```
+
+Create config file once:
+
+```bash
+cp start_gui.env.example start_gui.env
+nano start_gui.env
+```
+
+Run:
+
+```bash
+./start_gui.sh
+```
+
+After config is saved, future starts only need:
+
+```bash
+cd /home/dev/sigma3/touchscreen-module
+./start_gui.sh
+```
+
+Stop GUI process on Raspberry Pi:
+
+```bash
+pkill -f qt_gui.py
+```
+
+Stop it remotely from laptop:
+
+```powershell
+ssh dev@172.20.10.14 "pkill -f qt_gui.py"
+```
+
+Sync updated launcher files from laptop to Raspberry Pi:
+
+```powershell
+scp start_gui.sh start_gui.env.example README.md dev@172.20.10.14:/home/dev/sigma3/touchscreen-module/
+```
+
+Optional environment variables for script:
+- `FIXTURE_TOPIC` (default: `stadium/config/fixture_id`)
+- `WAIT_SEC` (default: `30`)
+- `APP_DIR` (default: `/home/dev/sigma3/touchscreen-module`)
+- `VENV_DIR` (default: `$APP_DIR/.venv`)
+
+## Raspberry Pi Startup (from PC via SSH)
+
+When Raspberry Pi is connected to the display (`DISPLAY=:0`), start GUI remotely from your laptop using:
+
+```powershell
+ssh -t dev@172.20.10.14 "export DISPLAY=:0; export XAUTHORITY=/home/dev/.Xauthority; cd /home/dev/sigma3/touchscreen-module && ./start_gui.sh"
+```
+
+This command:
+- runs on Raspberry Pi desktop session display
+- loads `start_gui.sh` config (`start_gui.env` if present)
+- reads `fixture_id` from MQTT topic (`stadium/config/fixture_id`)
+- starts `qt_gui.py`
+
+Stop GUI remotely:
+
+```powershell
+ssh dev@172.20.10.14 "pkill -f qt_gui.py"
+```
+
 ## Configure API Key and Fixture ID
 
 The app reads:
 
 - `API_FOOTBALL_KEY` (required)
 - `API_FIXTURE_ID` (required)
+- `SEAT_ID` (optional, default `section1,row1,col1`)
 - `MQTT_HOST` (optional, default `127.0.0.1`)
 - `MQTT_PORT` (optional, default `1883`)
 
@@ -190,8 +289,62 @@ Configured in `qt_gui.py`:
 - `stadium/seat/{SEAT_ID}/cmd`
 - `stadium/seat/{SEAT_ID}/ack`
 - `stadium/broadcast/safety`
+- `stadium/broadcast/replay`
+- `stadium/broadcast/vote`
+- `stadium/config/fixture_id` (used by `start_gui.sh`)
+
+## Demo Commands (ORDER / VOTE / SAFETY)
+
+Use Docker broker container (`mqtt-broker`) on laptop.
+
+### 1) ORDER uplink (from GUI)
+
+In GUI, open `Order` page and click `Submit Order`.
+
+Optional terminal monitor:
+
+```powershell
+docker exec -it mqtt-broker mosquitto_sub -h 127.0.0.1 -p 1883 -t stadium/seat/section1,row1,col1/cmd -v
+```
+
+Expected: one `cmd=ORDER` JSON message from GUI.
+
+### 2) VOTE downlink (to GUI)
+
+Open vote banner:
+
+```powershell
+docker exec -it mqtt-broker mosquitto_pub -h 127.0.0.1 -p 1883 -t stadium/broadcast/vote -m "open"
+```
+
+Close vote banner:
+
+```powershell
+docker exec -it mqtt-broker mosquitto_pub -h 127.0.0.1 -p 1883 -t stadium/broadcast/vote -m "close"
+```
+
+### 3) SAFETY downlink (to GUI)
+
+Enter safety mode:
+
+```powershell
+$s='{"ts":1234567891,"mode":"SAFETY","level":"CRITICAL","msg":"Safety test"}'
+Set-Content -Path "$env:TEMP\safety.json" -Value $s -NoNewline
+docker cp "$env:TEMP\safety.json" mqtt-broker:/tmp/safety.json
+docker exec -it mqtt-broker mosquitto_pub -h 127.0.0.1 -p 1883 -t stadium/broadcast/safety -f /tmp/safety.json
+```
+
+Clear safety mode:
+
+```powershell
+$n='{"ts":1234567892,"mode":"NORMAL","level":"INFO","msg":"Safety cleared"}'
+Set-Content -Path "$env:TEMP\normal.json" -Value $n -NoNewline
+docker cp "$env:TEMP\normal.json" mqtt-broker:/tmp/normal.json
+docker exec -it mqtt-broker mosquitto_pub -h 127.0.0.1 -p 1883 -t stadium/broadcast/safety -f /tmp/normal.json
+```
 
 ## Notes
 
-- If API returns no data for some stats, UI shows `-`.
+- If API statistics are temporarily unavailable, UI keeps last valid values and marks note as `stats pending`.
+- If a stat value is missing/empty, UI row value is normalized to `0`.
 - For production, keep API key in env vars or a secret manager.

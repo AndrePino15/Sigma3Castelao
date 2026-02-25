@@ -1,24 +1,22 @@
 import json
 import time
-import subprocess
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 import requests
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPropertyAnimation, QEasingCurve, QUrl
 from PySide6.QtGui import QFont, QPixmap, QPainter, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QGridLayout, QVBoxLayout, QHBoxLayout, QMessageBox, QStackedWidget,
     QLineEdit, QSpinBox, QGraphicsDropShadowEffect, QFrame, QScrollArea, QSizePolicy
 )
-
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QFont
 
-import os
+
 import paho.mqtt.client as mqtt
 
 
@@ -26,13 +24,14 @@ import paho.mqtt.client as mqtt
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BROKER_HOST = os.getenv("MQTT_HOST", "127.0.0.1").strip() or "127.0.0.1"
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
-SEAT_ID = os.getenv("SEAT_ID", "A3-12").strip() or "A3-12"
+SEAT_ID = os.getenv("SEAT_ID", "section1,row1,col1").strip() or "section1,row1,col1"
 
 TOPIC_TELE = f"stadium/seat/{SEAT_ID}/telemetry"
 TOPIC_CMD  = f"stadium/seat/{SEAT_ID}/cmd"
 TOPIC_ACK  = f"stadium/seat/{SEAT_ID}/ack"
 TOPIC_SAFETY = "stadium/broadcast/safety"
 TOPIC_REPLAY = "stadium/broadcast/replay"
+TOPIC_VOTE = "stadium/broadcast/vote"
 
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "").strip()
@@ -43,6 +42,10 @@ API_UPSTREAM_MS = 30000
 API_CACHE_READ_MS = 3000
 API_BOOST_UPSTREAM_MS = 8000
 API_BOOST_HOLD_MS = 120000
+
+
+def asset_path(filename: str) -> str:
+    return os.path.join(BASE_DIR, "assets", filename)
 
 
 @dataclass
@@ -62,6 +65,7 @@ class MqttBridge(QObject):
     sig_ack = Signal(dict)
     sig_safety = Signal(dict)
     sig_replay = Signal(dict)
+    sig_vote = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -80,6 +84,12 @@ class MqttBridge(QObject):
             self.client.disconnect()
         except Exception:
             pass
+
+    def is_connected(self) -> bool:
+        try:
+            return bool(self.client.is_connected())
+        except Exception:
+            return False
 
     def publish_cmd(self, cmd: str, value=1, payload: dict | None = None):
         msg = {
@@ -101,15 +111,26 @@ class MqttBridge(QObject):
         client.subscribe(TOPIC_ACK, qos=1)
         client.subscribe(TOPIC_SAFETY, qos=1)
         client.subscribe(TOPIC_REPLAY, qos=1)
+        client.subscribe(TOPIC_VOTE, qos=1)
 
     def _on_disconnect(self, client, userdata, rc):
         self.sig_connected.emit(False)
 
     def _on_message(self, client, userdata, msg):
+        raw = msg.payload.decode("utf-8", errors="ignore").strip()
         try:
-            data = json.loads(msg.payload.decode("utf-8"))
+            data = json.loads(raw)
         except Exception:
-            return
+            # Be tolerant for vote broadcast payloads from shell commands:
+            # allow plain text like "open"/"close" or free-form message text.
+            if msg.topic == TOPIC_VOTE:
+                lower = raw.lower()
+                if lower in {"close", "hide", "end", "off", "stop", "open"}:
+                    data = {"event": lower}
+                else:
+                    data = {"event": "open", "msg": raw}
+            else:
+                return
 
         if msg.topic == TOPIC_TELE:
             self.sig_telemetry.emit(data)
@@ -119,6 +140,8 @@ class MqttBridge(QObject):
             self.sig_safety.emit(data)
         elif msg.topic == TOPIC_REPLAY:
             self.sig_replay.emit(data)
+        elif msg.topic == TOPIC_VOTE:
+            self.sig_vote.emit(data)
 
 class DragScrollArea(QScrollArea):
     # Enable click-and-drag scrolling for touch-style interaction.
@@ -414,7 +437,7 @@ class HomePage(QWidget):
         self._tap_timer.setInterval(1200)
         self._tap_timer.timeout.connect(self._reset_tap)
 
-        self._bg = QPixmap("assets/background.png")
+        self._bg = QPixmap(asset_path("background.png"))
         self._menu_collapsed_w = 76
         self._menu_expanded_w = 300
         self._menu_expanded = False
@@ -441,9 +464,9 @@ class HomePage(QWidget):
         self.btn_menu.setCursor(Qt.PointingHandCursor)
         self.btn_menu.setFlat(True)
         self.btn_menu.setFocusPolicy(Qt.NoFocus)
-        menu_icon = QPixmap("assets/menu.png")
+        menu_icon = QPixmap(asset_path("menu.png"))
         if menu_icon.isNull():
-            menu_icon = QPixmap("assets/MENU.png")
+            menu_icon = QPixmap(asset_path("MENU.png"))
         if not menu_icon.isNull():
             self.btn_menu.setIcon(QIcon(menu_icon))
             self.btn_menu.setIconSize(self.btn_menu.size() * 0.7)
@@ -601,21 +624,25 @@ class HomePage(QWidget):
         self._tap_timer.stop()
 
 class BackButton(QPushButton):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setFixedSize(64, 64)
         self.setFlat(True)
         self.setFocusPolicy(Qt.NoFocus)
 
-        pm = QPixmap("assets/back.png")
+        pm = QPixmap(asset_path("back.png"))
         if not pm.isNull():
             self.setIcon(QIcon(pm))
             self.setIconSize(self.size() * 0.65)
+        else:
+            self.setText("<")
 
         # Default: icon only (no border / no background).
         # Pressed: subtle translucent feedback without border.
         self.setStyleSheet(
             "QPushButton {"
+            "  color: white;"
+            "  font: 700 28px 'Arial';"
             "  background: transparent;"
             "  border: none;"
             "}"
@@ -634,7 +661,7 @@ class BaseSubPage(QWidget):
     def __init__(self, title_text: str):
         super().__init__()
         self._use_bg = False
-        self._bg = QPixmap("assets/background.png")
+        self._bg = QPixmap(asset_path("background.png"))
         self.title = QLabel(title_text)
         self.title.setFont(QFont("Arial", 22, QFont.Bold))
         self.title.setStyleSheet("color: white;")
@@ -679,7 +706,7 @@ class ReplayPage(BaseSubPage):
 
         self.btn_last = QPushButton("Last Highlight")
         self.btn_goal = QPushButton("Last Goal")
-        self.btn_top  = QPushButton("Top Moments")
+        self.btn_top = QPushButton("Top Moments")
 
         for b in [self.btn_last, self.btn_goal, self.btn_top]:
             b.setMinimumHeight(90)
@@ -695,69 +722,103 @@ class ReplayPage(BaseSubPage):
         self.status = QLabel("")
         self.status.setStyleSheet("color: white; font: 700 16px 'Arial';")
         self.status.setAlignment(Qt.AlignCenter)
+        self.status.hide()
         self.content.addWidget(self.status)
-        self.content.addSpacing(20)
-        
-        self.video_widget = QVideoWidget()
-        self.player = QMediaPlayer()
-        self.audio = QAudioOutput()
-        self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video_widget)
-        
-        video_row = QHBoxLayout()
-        video_row.addStretch(1)
-        video_row.addWidget(self.video_widget)
-        video_row.addStretch(1)
-        self.content.addLayout(video_row)
+        self.content.addStretch(1)
 
         self.btn_last.clicked.connect(lambda: self.sig_request_replay.emit("highlight"))
         self.btn_goal.clicked.connect(lambda: self.sig_request_replay.emit("goal"))
         self.btn_top.clicked.connect(lambda: self.sig_request_replay.emit("moment"))
 
-    def play_video(self, filename):
+    def set_status(self, text: str):
+        txt = str(text).strip()
+        if txt:
+            self.status.setText(txt)
+            self.status.show()
+        else:
+            self.status.clear()
+            self.status.hide()
 
-        source = str(filename).strip()
+
+class ReplayPlayerPage(QWidget):
+    sig_back = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet("background: black;")
+
+        self.video_widget = QVideoWidget(self)
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.audio.setVolume(1.0)
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video_widget)
+        self.player.errorOccurred.connect(self._on_player_error)
+        self.player.mediaStatusChanged.connect(self._on_media_status)
+
+        self.status = QLabel("", self)
+        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setWordWrap(True)
+        self.status.setStyleSheet(
+            "color: white;"
+            "font: 700 18px 'Arial';"
+            "background: rgba(0,0,0,120);"
+            "border-radius: 10px;"
+            "padding: 8px 14px;"
+        )
+        self.status.hide()
+
+        self.btn_back = BackButton(self)
+        self.btn_back.clicked.connect(self._go_back)
+
+    def resizeEvent(self, event):
+        self.video_widget.setGeometry(self.rect())
+        status_w = max(380, min(self.width() - 80, 860))
+        self.status.resize(status_w, self.status.sizeHint().height() + 10)
+        self.status.move((self.width() - self.status.width()) // 2, 24)
+        self.btn_back.move(24, self.height() - self.btn_back.height() - 24)
+        self.btn_back.raise_()
+        self.status.raise_()
+        super().resizeEvent(event)
+
+    def play_video(self, source: str):
+        source = str(source).strip()
         if source.startswith("http://") or source.startswith("https://"):
             media_url = QUrl(source)
         else:
             path = source if os.path.isabs(source) else os.path.join(BASE_DIR, source)
-            path = os.path.abspath(path)
-            media_url = QUrl.fromLocalFile(path)
-        
-        self.fullscreen_window = QWidget()
-        self.fullscreen_window.setWindowTitle("Video Player")
-        self.fullscreen_window.setWindowFlag(Qt.Window)
-        self.fullscreen_window.setWindowState(Qt.WindowFullScreen)
-        
-        layout = QVBoxLayout()
-        self.fullscreen_video = QVideoWidget()
-        layout.addWidget(self.fullscreen_video)
-        self.fullscreen_window.setLayout(layout)
-        
-        self.exit_button = QPushButton("X")
-        self.exit_button.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint) 
-        self.exit_button.setFixedSize(50, 50)
-        self.exit_button.setStyleSheet("background-color: black; color: white; font-size: 24px; border-radius: 35px;")
-        self.exit_button.clicked.connect(self.exit_fullscreen)
-        self.exit_button.move(20, 20)
-        self.exit_button.show()
-
-        self.player.setVideoOutput(self.fullscreen_video)
-        self.player.setSource(media_url)
-        self.fullscreen_window.show()
-        self.player.play()
-       
-        
-    def exit_fullscreen(self, event=None):
+            media_url = QUrl.fromLocalFile(os.path.abspath(path))
         self.player.stop()
-        if hasattr(self, "fullscreen_window"):
-            self.fullscreen_window.close()
-        if hasattr(self, "exit_button"):
-            self.exit_button.close()
-        self.player.setVideoOutput(self.video_widget)
+        self.set_status("")
+        self.player.setSource(media_url)
+        self.player.play()
 
     def set_status(self, text: str):
-        self.status.setText(text)
+        txt = str(text).strip()
+        if txt:
+            self.status.setText(txt)
+            self.status.show()
+        else:
+            self.status.clear()
+            self.status.hide()
+
+    def stop_video(self):
+        self.player.stop()
+
+    def _go_back(self):
+        self.stop_video()
+        self.sig_back.emit()
+
+    def _on_player_error(self, error, error_string):
+        if error != QMediaPlayer.NoError:
+            detail = error_string.strip() if isinstance(error_string, str) else ""
+            self.set_status(f"Video error: {detail or 'decode/open failed'}")
+
+    def _on_media_status(self, status):
+        if status == QMediaPlayer.InvalidMedia:
+            self.set_status("Invalid media source.")
+        elif status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia):
+            self.set_status("")
 
 class InfoPage(BaseSubPage):
     def __init__(self):
@@ -791,13 +852,6 @@ class OrderPage(BaseSubPage):
         self.qty.setFont(QFont("Arial", 14))
 
         self.btn_submit = QPushButton("Submit Order")
-        self.btn_kb = QPushButton("Keyboard")
-        self.btn_kb.setMinimumHeight(60)
-        self.btn_kb.setFont(QFont("Arial", 14, QFont.Bold))
-        self.btn_kb.setStyleSheet(
-            "QPushButton { color:white; background:#2a2a2a; border-radius:18px; }"
-            "QPushButton:pressed { background:#3a3a3a; }"
-        )
         self.btn_submit.setMinimumHeight(70)
         self.btn_submit.setFont(QFont("Arial", 16, QFont.Bold))
         self.btn_submit.setStyleSheet(
@@ -819,7 +873,6 @@ class OrderPage(BaseSubPage):
         self.content.addWidget(lab3)
         self.content.addWidget(self.note)
         self.content.addSpacing(10)
-        self.content.addWidget(self.btn_kb)
         self.content.addWidget(self.btn_submit)
 
 
@@ -924,10 +977,100 @@ class SafetyPage(QWidget):
         self.msg.setText(f"[{level}] {msg}")
 
 
+class VoteOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        # Overlay includes a confirm button, so it must receive mouse/touch events.
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet("background: rgba(0, 0, 0, 120);")
+
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide_vote)
+
+        card = QFrame()
+        card.setStyleSheet(
+            "QFrame {"
+            "  background: rgba(7, 14, 46, 230);"
+            "  border: none;"
+            "  border-radius: 20px;"
+            "}"
+        )
+
+        self.title = QLabel("VOTING OPEN")
+        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setStyleSheet("color: white; font: 800 40px 'Arial';")
+
+        self.msg = QLabel("Voting is open. Please use the seat-side button to vote.")
+        self.msg.setAlignment(Qt.AlignCenter)
+        self.msg.setWordWrap(True)
+        self.msg.setStyleSheet("color: white; font: 700 24px 'Arial';")
+
+        self.countdown = QLabel("")
+        self.countdown.setAlignment(Qt.AlignCenter)
+        self.countdown.setStyleSheet("color: #ffe48d; font: 700 18px 'Arial';")
+
+        self.btn_confirm = QPushButton("CONFIRM")
+        self.btn_confirm.setCursor(Qt.PointingHandCursor)
+        self.btn_confirm.setMinimumSize(180, 54)
+        self.btn_confirm.setFocusPolicy(Qt.NoFocus)
+        self.btn_confirm.setStyleSheet(
+            "QPushButton {"
+            "  color: white;"
+            "  background: rgba(255,255,255,28);"
+            "  border: none;"
+            "  border-radius: 14px;"
+            "  padding: 10px 18px;"
+            "  font: 700 20px 'Arial';"
+            "}"
+            "QPushButton:pressed {"
+            "  background: rgba(255,255,255,45);"
+            "  border: none;"
+            "}"
+        )
+        self.btn_confirm.clicked.connect(self.hide_vote)
+
+        card_layout = QVBoxLayout()
+        card_layout.setContentsMargins(36, 28, 36, 28)
+        card_layout.setSpacing(14)
+        card_layout.addWidget(self.title)
+        card_layout.addWidget(self.msg)
+        card_layout.addWidget(self.countdown)
+        card_layout.addWidget(self.btn_confirm, alignment=Qt.AlignCenter)
+        card.setLayout(card_layout)
+
+        root = QVBoxLayout()
+        root.setContentsMargins(120, 80, 120, 80)
+        root.addStretch(1)
+        root.addWidget(card, alignment=Qt.AlignCenter)
+        root.addStretch(1)
+        self.setLayout(root)
+        self.hide()
+
+    def show_vote(self, msg: str, duration_sec: int = 0):
+        text = str(msg).strip() or "Voting is open. Please use the seat-side button to vote."
+        self.msg.setText(text)
+        if duration_sec > 0:
+            self.countdown.setText(f"Voting window: {duration_sec}s")
+            self._hide_timer.start(int(duration_sec * 1000))
+        else:
+            self.countdown.setText("")
+            self._hide_timer.stop()
+        self.show()
+        self.raise_()
+
+    def hide_vote(self):
+        self._hide_timer.stop()
+        self.hide()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Screen GUI (Qt + MQTT)")
+        # Keep a normal framed top-level window for better virtual-keyboard behavior.
+        self.setWindowFlags(Qt.Window)
         self.resize(1280, 720)  # match your display resolution
 
         self.bridge = MqttBridge()
@@ -938,6 +1081,7 @@ class MainWindow(QMainWindow):
 
         self.page_home = HomePage()
         self.page_replay = ReplayPage()
+        self.page_replay_player = ReplayPlayerPage()
         self.page_info = InfoPage()
         self.page_order = OrderPage()
         self.page_admin = AdminPage()
@@ -950,9 +1094,11 @@ class MainWindow(QMainWindow):
         self._published_info_ver = -1
         self._boost_until_ms = 0
         self._last_score_key = ""
+        self._replay_proc = None
 
         self.stack.addWidget(self.page_home)
         self.stack.addWidget(self.page_replay)
+        self.stack.addWidget(self.page_replay_player)
         self.stack.addWidget(self.page_info)
         self.stack.addWidget(self.page_order)
         self.stack.addWidget(self.page_admin)
@@ -960,6 +1106,25 @@ class MainWindow(QMainWindow):
         self._apply_match_info({})
 
         self.setCentralWidget(self.stack)
+
+        self.vote_overlay = VoteOverlay(self)
+        self.vote_overlay.setGeometry(self.rect())
+        self.vote_overlay.hide_vote()
+
+        self.notice = QLabel("", self)
+        self.notice.setAlignment(Qt.AlignCenter)
+        self.notice.setWordWrap(True)
+        self.notice.setStyleSheet(
+            "color: white;"
+            "font: 700 16px 'Arial';"
+            "background: rgba(0,0,0,170);"
+            "border-radius: 10px;"
+            "padding: 8px 12px;"
+        )
+        self.notice.hide()
+        self.notice_timer = QTimer(self)
+        self.notice_timer.setSingleShot(True)
+        self.notice_timer.timeout.connect(self.notice.hide)
 
         # Home navigation
         self.page_home.sig_goto.connect(self._goto_page)
@@ -969,12 +1134,12 @@ class MainWindow(QMainWindow):
 
         # Subpages back (bottom-left back button)
         self.page_replay.sig_back.connect(lambda: self._goto_page("home"))
+        self.page_replay_player.sig_back.connect(lambda: self._goto_page("replay"))
         self.page_info.sig_back.connect(lambda: self._goto_page("home"))
         self.page_order.sig_back.connect(lambda: self._goto_page("home"))
 
         # Order submit
         self.page_order.btn_submit.clicked.connect(self._submit_order)
-        self.page_order.btn_kb.clicked.connect(self._open_keyboard)
 
         # Safety ack (先留着，不用管安全逻辑也不影响)
         self.page_safety.btn_ack.clicked.connect(self._ack_safety)
@@ -985,7 +1150,7 @@ class MainWindow(QMainWindow):
         self.bridge.sig_ack.connect(self._on_ack)
         self.bridge.sig_safety.connect(self._on_safety)
         self.bridge.sig_replay.connect(self._on_replay)
-
+        self.bridge.sig_vote.connect(self._on_vote)
         self.page_replay.sig_request_replay.connect(self._request_replay)
 
         # Heartbeat timer for stale detection
@@ -1008,14 +1173,43 @@ class MainWindow(QMainWindow):
         self.bridge.start()
 
     def closeEvent(self, event):
+        self._stop_external_replay()
+        self.page_replay_player.stop_video()
         self.bridge.stop()
         super().closeEvent(event)
 
+    def resizeEvent(self, event):
+        if hasattr(self, "vote_overlay"):
+            self.vote_overlay.setGeometry(self.rect())
+            self.vote_overlay.raise_()
+        if hasattr(self, "notice"):
+            w = max(300, min(self.width() - 40, 760))
+            self.notice.resize(w, self.notice.sizeHint().height() + 8)
+            self.notice.move((self.width() - self.notice.width()) // 2, 16)
+            self.notice.raise_()
+        super().resizeEvent(event)
+
+    def _show_notice(self, text: str, duration_ms: int = 2200):
+        msg = str(text).strip()
+        if not msg:
+            self.notice.hide()
+            return
+        self.notice.setText(msg)
+        self.notice.resize(max(300, min(self.width() - 40, 760)), self.notice.sizeHint().height() + 8)
+        self.notice.move((self.width() - self.notice.width()) // 2, 16)
+        self.notice.show()
+        self.notice.raise_()
+        self.notice_timer.start(max(500, int(duration_ms)))
+
     def _goto_page(self, name: str):
+        if self.stack.currentWidget() == self.page_replay_player and name != "replay_player":
+            self.page_replay_player.stop_video()
         if name == "home":
             self.stack.setCurrentWidget(self.page_home)
         elif name == "replay":
             self.stack.setCurrentWidget(self.page_replay)
+        elif name == "replay_player":
+            self.stack.setCurrentWidget(self.page_replay_player)
         elif name == "info":
             self.stack.setCurrentWidget(self.page_info)
         elif name == "order":
@@ -1045,22 +1239,44 @@ class MainWindow(QMainWindow):
         ref = d.get("ref_cmd", "")
         ok = d.get("ok", False)
         msg = d.get("msg", "")
-        QMessageBox.information(self, "ACK", f"ok={ok}\nref_cmd={ref}\nmsg={msg}")
+        status = "OK" if ok else "FAILED"
+        self._show_notice(f"ACK {status} | {ref} | {msg}", 2600)
 
     def _on_safety(self, d: dict):
         mode = str(d.get("mode", "")).upper()
         if mode == "SAFETY":
             self._switch_to_safety(d)
         elif mode in ["NORMAL", "CLEAR", "CLEARED"]:
+            self._stop_external_replay()
+            self.page_replay_player.stop_video()
             self.stack.setCurrentWidget(self.page_admin)
 
+    def _on_vote(self, d: dict):
+        payload = d if isinstance(d, dict) else {}
+        action = str(payload.get("event", payload.get("mode", ""))).strip().lower()
+        if action in {"close", "hide", "end", "off", "stop"}:
+            self.vote_overlay.hide_vote()
+            return
+        message = str(payload.get("msg", "")).strip() or "Voting is open. Please use the seat-side button to vote."
+        duration = 0
+        raw_duration = payload.get("duration", payload.get("duration_sec", 0))
+        try:
+            duration = max(0, int(raw_duration))
+        except Exception:
+            duration = 0
+        self.vote_overlay.show_vote(message, duration)
+
     def _switch_to_safety(self, d: dict):
+        self._stop_external_replay()
+        self.page_replay_player.stop_video()
         self.page_safety.set_message(d)
         self.stack.setCurrentWidget(self.page_safety)
 
     def _ack_safety(self):
         # Send an ACK command; keep UI policy simple: go back to dashboard
         self.bridge.publish_cmd("SAFETY_ACK", 1)
+        self._stop_external_replay()
+        self.page_replay_player.stop_video()
         self.stack.setCurrentWidget(self.page_admin)
 
     def _submit_order(self):
@@ -1069,20 +1285,73 @@ class MainWindow(QMainWindow):
             "qty": int(self.page_order.qty.value()),
             "note": self.page_order.note.text().strip()
         }
+        if not self.bridge.is_connected():
+            self._show_notice("MQTT disconnected. Order not sent.", 2500)
+            return
+        self.page_order.btn_submit.setEnabled(False)
+        QTimer.singleShot(600, lambda: self.page_order.btn_submit.setEnabled(True))
         self.bridge.publish_cmd("ORDER", 1, payload=payload)
-        QMessageBox.information(self, "Order", "Order sent!")
+        self._show_notice("Order sent.", 1800)
 
-    def _open_keyboard(self):
-        # Windows touch keyboard
+    def _stop_external_replay(self):
+        p = self._replay_proc
+        if not p:
+            return
+        if p.poll() is None:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        self._replay_proc = None
+
+    def _launch_external_replay(self, source: str) -> tuple[bool, str]:
+        ffplay = shutil.which("ffplay")
+        if not ffplay:
+            return False, "ffplay not found on this device."
+        src = str(source).strip()
+        if not src:
+            return False, "Empty replay source."
+        self._stop_external_replay()
+        cmd = [
+            ffplay,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-autoexit",
+            "-exitonmousedown",
+            "-fs",
+            "-noborder",
+            src,
+        ]
         try:
-            subprocess.Popen(["cmd", "/c", "start", "osk"])
+            self._replay_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True, ""
         except Exception as e:
-            QMessageBox.warning(self, "Keyboard", f"Failed to open keyboard: {e}")
+            return False, str(e)
 
     def _request_replay(self, clip: str):
-        self.bridge.publish_cmd("REPLAY", 1, payload={"clip": clip})
-        self.stack.setCurrentWidget(self.page_replay)
-        self.page_replay.set_status(f"Requesting {clip} replay from server...")
+        clip_key = str(clip).strip().lower()
+        local_map = {
+            "goal": "goal.mp4",
+            "highlight": "highlight.mp4",
+            "moment": "moment.mp4",
+        }
+        filename = local_map.get(clip_key)
+        if not filename:
+            self.page_replay.set_status("Unknown replay clip.")
+            return
+        local_path = os.path.join(BASE_DIR, filename)
+        if not os.path.exists(local_path):
+            self.page_replay.set_status(f"Local replay not found: {filename}")
+            return
+        ok, err = self._launch_external_replay(local_path)
+        if ok:
+            self.page_replay.set_status("")
+        else:
+            self.page_replay.set_status(f"Replay open failed: {err}")
 
     def _on_replay(self, d: dict):
         clip = str(d.get("clip", "")).strip().lower()
@@ -1100,12 +1369,11 @@ class MainWindow(QMainWindow):
             self.page_replay.set_status("Replay URL expired.")
             return
 
-        if clip and clip in {"goal", "highlight", "moment"}:
-            self.page_replay.set_status(f"Playing {clip} replay...")
+        ok, err = self._launch_external_replay(url)
+        if ok:
+            self.page_replay.set_status("")
         else:
-            self.page_replay.set_status("Playing replay...")
-        self.stack.setCurrentWidget(self.page_replay)
-        self.page_replay.play_video(url)
+            self.page_replay.set_status(f"Replay open failed: {err}")
 
     def _stale_check(self):
         if self.last_rx_ms == 0:
@@ -1211,12 +1479,24 @@ class MainWindow(QMainWindow):
 
         home_stats = []
         away_stats = []
-        for team_block in j2.get("response", []):
+        blocks = j2.get("response", [])
+        home_id_s = str(home_id) if home_id is not None else ""
+        away_id_s = str(away_id) if away_id is not None else ""
+        for team_block in blocks:
             tid = team_block.get("team", {}).get("id")
-            if tid == home_id:
+            tid_s = str(tid) if tid is not None else ""
+            if tid_s and tid_s == home_id_s:
                 home_stats = team_block.get("statistics", [])
-            elif tid == away_id:
+            elif tid_s and tid_s == away_id_s:
                 away_stats = team_block.get("statistics", [])
+
+        # Some feeds return team ids as different types or fail id matching.
+        # Fallback: if there are two team blocks, use them as home/away order.
+        if (not home_stats and not away_stats) and isinstance(blocks, list) and len(blocks) >= 2:
+            home_stats = blocks[0].get("statistics", []) or []
+            away_stats = blocks[1].get("statistics", []) or []
+
+        stats_available = bool(home_stats or away_stats)
 
         def pair(label: str, api_name) -> dict:
             return {
@@ -1225,6 +1505,27 @@ class MainWindow(QMainWindow):
                 "away": self._api_find_stat(away_stats, api_name),
             }
 
+        stats_rows = [
+            pair("POSSESSION", "Ball Possession"),
+            pair("CORNERS", "Corner Kicks"),
+            pair("SHOTS", "Total Shots"),
+            pair("SHOTS ON TARGET", "Shots on Goal"),
+            pair("BLOCKED SHOTS", "Blocked Shots"),
+            pair("OFFSIDES", "Offsides"),
+            pair("FOULS", "Fouls"),
+            pair("YELLOW CARDS", ["Yellow Cards", "Yellow Card"]),
+            pair("PASS SUCCESS", "Passes %"),
+            pair("GOALKEEPER SAVES", "Goalkeeper Saves"),
+        ]
+
+        # Graceful fallback: no stats now -> keep previous stats if available.
+        if not stats_available:
+            prev = self._cached_match_info if isinstance(self._cached_match_info, dict) else {}
+            prev_stats = prev.get("stats") if isinstance(prev.get("stats"), list) else None
+            if prev_stats:
+                stats_rows = prev_stats
+            note = f"{note} | stats pending"
+
         return {
             "home": home_name,
             "away": away_name,
@@ -1232,18 +1533,7 @@ class MainWindow(QMainWindow):
             "time": time_text,
             "event": event,
             "note": note,
-            "stats": [
-                pair("POSSESSION", "Ball Possession"),
-                pair("CORNERS", "Corner Kicks"),
-                pair("SHOTS", "Total Shots"),
-                pair("SHOTS ON TARGET", "Shots on Goal"),
-                pair("BLOCKED SHOTS", "Blocked Shots"),
-                pair("OFFSIDES", "Offsides"),
-                pair("FOULS", "Fouls"),
-                pair("YELLOW CARDS", ["Yellow Cards", "Yellow Card"]),
-                pair("PASS SUCCESS", "Passes %"),
-                pair("GOALKEEPER SAVES", "Goalkeeper Saves"),
-            ],
+            "stats": stats_rows,
         }
 
     @staticmethod
@@ -1276,9 +1566,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Pi-specific stability: avoid GPU video texture path that can render green frames.
+    os.environ.setdefault("QT_OPENGL", "software")
+    os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+    QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
     app = QApplication([])
     w = MainWindow()
-    w.show()
+    w.showMaximized()
     app.exec()
 
 

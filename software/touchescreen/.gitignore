@@ -10,11 +10,13 @@ env/
 # Local secrets / runtime config
 .env
 .env.*
+start_gui.env
 api key.txt
 FIXTURE.txt
 
 # Logs
 *.log
+*_qt.mp4
 
 # IDE/editor
 .vscode/
@@ -23,3 +25,6 @@ FIXTURE.txt
 # OS files
 .DS_Store
 Thumbs.db
+
+*.mp4
+mp4 files/

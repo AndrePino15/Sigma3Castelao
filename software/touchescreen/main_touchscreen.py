@@ -11,7 +11,7 @@ if __name__ == "__main__":
     section_id = int(os.getenv("SECTION_ID", "12345"))
     broker_host = os.getenv("MQTT_HOST", "127.0.0.1").strip() or "127.0.0.1"
     broker_port = int(os.getenv("MQTT_PORT", "1883"))
-    touchscreen_seat_id = os.getenv("SEAT_ID", f"S{section_id}")
+    touchscreen_seat_id = os.getenv("SEAT_ID", "section1,row1,col1")
 
     bridge = Bridge(
         section_id=section_id,

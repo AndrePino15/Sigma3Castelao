@@ -10,7 +10,7 @@ import paho.mqtt.client as mqtt
 BROKER_HOST = os.getenv("MQTT_HOST", "127.0.0.1").strip() or "127.0.0.1"
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
-SEAT_ID = "A3-12"
+SEAT_ID = "section1,row1,col1"
 
 TOPIC_TELE = f"stadium/seat/{SEAT_ID}/telemetry"
 TOPIC_CMD  = f"stadium/seat/{SEAT_ID}/cmd"
