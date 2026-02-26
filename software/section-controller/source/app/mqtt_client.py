@@ -10,13 +10,17 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List, Tuple
+import logging
 
 import paho.mqtt.client as mqtt
+
+LOGGER = logging.getLogger(__name__)
 
 # the frozen parameter is set because we don't want to modify a received message. We use it as is to not change its content
 @dataclass(frozen=True)
 class MqttEvent:
     topic: str
+    ts_ms: int
     payload: Dict[str, Any]
     qos: int = 0
     retain: bool = False
@@ -106,8 +110,7 @@ class MqttClient:
         self._stop_event.clear()
         self._connected_event.clear()
 
-        print(f"[DEBUG] broker_host={self.broker_host!r} ({type(self.broker_host)}), "
-                f"broker_port={self.broker_port!r} ({type(self.broker_port)})")
+        LOGGER.info("Connecting to broker at IP: %s, PORT: %s", self.broker_host, self.broker_port)
 
         # connect() is non-blocking-ish, but actual connection is handled by loop_start()
         self._client.connect(self.broker_host, self.broker_port, keepalive=self.keepalive)
@@ -130,6 +133,7 @@ class MqttClient:
         """
         for t, qos in topics:
             self._client.subscribe(t, qos=qos)
+            LOGGER.info("Successfuly subscribed to %s.", t)
 
     def publish_json(self, topic: str, payload: Dict[str, Any], qos: int = 0, retain: bool = False) -> None:
         data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)

@@ -1,15 +1,13 @@
-from __future__ import annotations
 import time
-from typing import Any, Dict
+from typing import List
 
 def now_ms() -> int:
     return int(time.time() * 1000)
 
-def clamp_int(v: int, lo: int, hi: int) -> int:
-    return max(lo, min(hi, int(v)))
-
-def ensure_rgb(d: Dict[str, Any]) -> Dict[str, int]:
-    r = clamp_int(d.get("r", 0), 0, 255)
-    g = clamp_int(d.get("g", 0), 0, 255)
-    b = clamp_int(d.get("b", 0), 0, 255)
-    return {"r": r, "g": g, "b": b}
+def parse_sections(raw: str) -> List[str]:
+    """Parse 'A,B,C' -> ['A','B','C'] with cleanup."""
+    if not raw:
+        return []
+    parts = [p.strip() for p in raw.split(",")]
+    parts = [p for p in parts if p]
+    return parts

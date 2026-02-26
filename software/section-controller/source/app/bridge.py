@@ -5,8 +5,13 @@ from app.mqtt_topics import control_topic, emergency_topic, led_topic, status_to
 from canbus.types import MessageTypes, OperationMode
 
 import can
+import logging
 from typing import Any, Dict, Optional, List, Tuple
 import time
+
+LOGGER = logging.getLogger(__name__)
+CAN_RECOVERY_BACKOFF_MIN_S = 0.5
+CAN_RECOVERY_BACKOFF_MAX_S = 5.0
 
 class Bridge:
     """
@@ -20,7 +25,7 @@ class Bridge:
                  broker_host: str,
                  broker_port: int = 1883,
                  can_channel: str = "can0",
-                 can_bustype: str = "socketcan") -> None:
+                 can_interface: str = "socketcan") -> None:
         
         self.section_id = section_id
         self.mode = OperationMode.NORMAL
@@ -33,30 +38,41 @@ class Bridge:
         self.broker_host = broker_host
         self.broker_port = broker_port 
         self.can_channel = can_channel
-        self.can_bustype = can_bustype
+        self.can_interface = can_interface
 
         # The int inside each tupple defines the QoS for the subscription to that topic, which is a parameter 
         # from the MQTT protocol itself. 
         # QoS: emergency/control = 1 (more reliable), LED = 0 (best-effort)
         self.subscriptions: list[tuple[str, int]] = [(control_topic(self.section_id), 0),
                                               (led_topic(self.section_id), 0), 
-                                              (emergency_topic(self.section_id), 1)]
+                                              (emergency_topic(), 1)]
         
         # Where this controller publishes aggregated status
         self.status_topic = status_topic(self.section_id)
         # simple run control
         self._running = False
+        self._can_available = False
+        self._can_recovery_next_ts = 0.0
+        self._can_recovery_backoff_s = CAN_RECOVERY_BACKOFF_MIN_S
+        self._can_recovery_attempts = 0
+        self._can_failure_logged = False
 
 # ================Methods for starting and stoping the controller================
 
     def start(self) -> None:
         '''
-        Docstring for start
-        
         This method is required to be called inside main.py to initialise the controller and both the MQTT Client and CAN bus.
 
         Its main functionalities are: connecting MQTT, starting CAN RX threads and apply CAN filters.
         '''
+        LOGGER.info(
+            "Bridge starting: section_id=%s broker=%s:%s can=%s/%s",
+            self.section_id,
+            self.broker_host,
+            self.broker_port,
+            self.can_channel,
+            self.can_interface,
+        )
         # Create MQTT client
         self.mqtt = MqttClient(broker_host=self.broker_host,
                                broker_port=self.broker_port,
@@ -65,34 +81,53 @@ class Bridge:
                                rx_maxsize=256)
 
         # Create CAN interface
-        self.can = CanInterface(channel=self.can_channel,
-                                bustype=self.can_bustype,
-                                rx_maxsize=256)
+        try:
+            self.can = CanInterface(channel=self.can_channel,
+                                    interface=self.can_interface,
+                                    rx_maxsize=256)
+        except Exception:
+            LOGGER.exception(
+                "Failed to initialize CAN interface %s/%s",
+                self.can_channel,
+                self.can_interface,
+            )
+            raise
         
         # Connect MQTT
-        connection_success = self.mqtt.connect(timeout=5.0)
+        try:
+            LOGGER.info("Connecting MQTT client to %s:%s", self.broker_host, self.broker_port)
+            connection_success = self.mqtt.connect(timeout=5.0)
+        except Exception:
+            LOGGER.exception("MQTT connect raised an exception")
+            connection_success = False
         if not connection_success:
             # For now, we don't crash; we go DEGRADED and keep CAN running.
             self.mode = OperationMode.DEGRADED
-            print(f"Connenction to {self.broker_host}:{self.broker_port} FAILED.")
+            LOGGER.warning("Connection to %s:%s failed; continuing in DEGRADED mode", self.broker_host, self.broker_port)
         else:
+            LOGGER.info("MQTT connected; subscribing to %s topics", len(self.subscriptions))
             self.mqtt.subscribe(self.subscriptions)
-            print(f"Successfully subscribed to {control_topic(self.section_id)}.")
-            print(f"Successfully subscribed to {led_topic(self.section_id)}.")
-            print(f"Successfully subscribed to {emergency_topic(self.section_id)}.")
 
         # Apply CAN filters to reduce load and seat->ctrl status range plus emergency/broadcast IDs
-        filters = [
-            {"can_id": protocol.SEAT_TO_CTRL_BASE, "can_mask": 0x700, "extended": False},
-            {"can_id": protocol.EMERGENCY_ID, "can_mask": 0x7FF, "extended": False},
-            {"can_id": protocol.BROADCAST_CMD_ID, "can_mask": 0x7FF, "extended": False},
-        ]
-        self.can.set_filters(filters)
+        self.can.set_filters(self._can_filters())
 
         # Start CAN RX thread (enqueues to self.can.rx_queue)
         self.can.start_rx(timeout=1.0)
+        LOGGER.info("CAN RX thread started")
 
+        self._can_available = True
+        self._can_recovery_backoff_s = CAN_RECOVERY_BACKOFF_MIN_S
+        self._can_recovery_next_ts = 0.0
+        self._can_recovery_attempts = 0
+        self._can_failure_logged = False
         self._running = True
+        LOGGER.info("Bridge started successfully")
+
+    def request_stop(self) -> None:
+        """
+        Request bridge loop shutdown without tearing down transports immediately.
+        """
+        self._running = False
 
     def stop(self) -> None:
         """
@@ -103,10 +138,13 @@ class Bridge:
         if self.mqtt is not None:
             self.mqtt.disconnect()
             self.mqtt = None
+            LOGGER.info("MQTT Client disconnected")
 
         if self.can is not None:
             self.can.close()
             self.can = None
+            LOGGER.info("CAN bus disconnected")
+        self._can_available = False
 
 # ================Methods for handling of the MQTT Client and CAN Bus================
 
@@ -114,9 +152,6 @@ class Bridge:
         """
         This method handles one MQTT event: translate to CAN and/or update mode.
         """
-        if self.can is None:
-            return
-
         topic = event.topic
         payload = event.payload or {}
 
@@ -132,7 +167,7 @@ class Bridge:
                 data=[MessageTypes.EMERGENCY, 1, 0, 0, 0, 0, 0, 0],
                 is_extended_id=False,
             )
-            self.can.send(msg)
+            self._send_can_message(msg, context=f"emergency topic {topic}")
             return
 
         # I should take a look at this LED implementation to make sure it agrees with what is happening with the server. 
@@ -158,7 +193,7 @@ class Bridge:
 
             r, g, b = rgb
             msg = protocol.encode_led_set(seat=seat, r=r, g=g, b=b)
-            self.can.send(msg)
+            self._send_can_message(msg, context=f"LED command topic {topic}")
             return
 
         if topic == control_topic(self.section_id):
@@ -183,9 +218,103 @@ class Bridge:
                 if isinstance(enabled, bool):
                     self.mode = OperationMode.SAFETY if enabled else OperationMode.NORMAL
                 return
-
-            # Extend here with other control commands
             return
+
+    def _can_filters(self) -> list[dict[str, object]]:
+        """
+        Return the CAN hardware filters used by this controller.
+        """
+        return [
+            {"can_id": protocol.SEAT_TO_CTRL_BASE, "can_mask": 0x700, "extended": False},
+            {"can_id": protocol.EMERGENCY_ID, "can_mask": 0x7FF, "extended": False},
+            {"can_id": protocol.BROADCAST_CMD_ID, "can_mask": 0x7FF, "extended": False},
+        ]
+
+    def _set_can_unavailable(self, reason: str) -> None:
+        """
+        Transition bridge into degraded mode and schedule CAN recovery retries.
+        """
+        was_available = self._can_available
+        if was_available and not self._can_failure_logged:
+            LOGGER.error(
+                "CAN runtime failure detected (%s); switching to DEGRADED mode and scheduling recovery",
+                reason,
+            )
+        elif not self._can_failure_logged:
+            LOGGER.error("CAN unavailable: %s", reason)
+
+        self._can_available = False
+        self._can_failure_logged = True
+        if was_available:
+            self._can_recovery_attempts = 0
+            self._can_recovery_backoff_s = CAN_RECOVERY_BACKOFF_MIN_S
+            self._can_recovery_next_ts = time.time() + self._can_recovery_backoff_s
+        if self.mode == OperationMode.NORMAL:
+            self.mode = OperationMode.DEGRADED
+
+    def _send_can_message(self, msg: can.Message, *, context: str) -> None:
+        """
+        Transmit a CAN frame when CAN is available; degrade and schedule recovery on error.
+        """
+        if self.can is None or not self._can_available:
+            LOGGER.info("Skipping CAN send while CAN unavailable (%s)", context)
+            return
+        try:
+            self.can.send(msg)
+        except Exception as exc:
+            LOGGER.error("CAN send failed during %s: %s", context, exc)
+            self._set_can_unavailable(f"TX failure: {exc}")
+
+    def _attempt_can_recovery(self) -> None:
+        """
+        Recreate the CAN interface and RX thread, then swap it in on success.
+        """
+        now = time.time()
+        if self._running is False or self._can_available or self.can is None:
+            return
+        if now < self._can_recovery_next_ts:
+            return
+
+        self._can_recovery_attempts += 1
+        LOGGER.info(
+            "Attempting CAN recovery #%s on %s/%s (backoff=%.1fs)",
+            self._can_recovery_attempts,
+            self.can_channel,
+            self.can_interface,
+            self._can_recovery_backoff_s,
+        )
+
+        old_can = self.can
+        new_can: Optional[CanInterface] = None
+        try:
+            new_can = CanInterface(channel=self.can_channel, interface=self.can_interface, rx_maxsize=256)
+            new_can.set_filters(self._can_filters())
+            new_can.start_rx(timeout=1.0)
+        except Exception as exc:
+            LOGGER.warning("CAN recovery attempt failed: %s", exc)
+            if new_can is not None:
+                try:
+                    new_can.close()
+                except Exception:
+                    LOGGER.exception("Failed to close partially initialized CAN interface during recovery")
+            self._can_recovery_next_ts = time.time() + self._can_recovery_backoff_s
+            self._can_recovery_backoff_s = min(self._can_recovery_backoff_s * 2.0, CAN_RECOVERY_BACKOFF_MAX_S)
+            return
+
+        self.can = new_can
+        self._can_available = True
+        self._can_failure_logged = False
+        self._can_recovery_backoff_s = CAN_RECOVERY_BACKOFF_MIN_S
+        self._can_recovery_next_ts = 0.0
+        self._can_recovery_attempts = 0
+        if self.mode == OperationMode.DEGRADED:
+            self.mode = OperationMode.NORMAL
+        LOGGER.info("CAN recovery successful; CAN RX thread restarted")
+
+        try:
+            old_can.close()
+        except Exception:
+            LOGGER.exception("Failed to close previous CAN interface after successful recovery")
     
     def can_handle(self, msg: can.Message) -> None:
         """
@@ -200,7 +329,7 @@ class Bridge:
         try:
             decoded = protocol.decode(msg)
         except Exception:
-            # Bad/unknown frame: ignore for now (or log later)
+            LOGGER.info("Unable to decode receive CAN msg: %s", msg)
             return
 
         # Publish a compact status message
@@ -218,6 +347,11 @@ class Bridge:
         if "uptime_s" in decoded:
             payload["uptime_s"] = decoded["uptime_s"]
 
+        try:
+            self.mqtt.publish_json(self.status_topic, payload, qos=0, retain=False)
+        except Exception:
+            LOGGER.exception("Failed to publish CAN status to MQTT topic %s", self.status_topic)
+
     def run(self) -> None:
         """
         Run the bridge loop: consume MQTT and CAN queues and dispatch.
@@ -230,15 +364,23 @@ class Bridge:
 
         try:
             while self._running:
+                if self.can is not None and self._can_available and self.can.has_rx_failure():
+                    reason = self.can.rx_error_summary() or "unknown RX error"
+                    self._set_can_unavailable(f"RX failure: {reason}")
+
+                if not self._can_available:
+                    self._attempt_can_recovery()
+
                 # Process a few MQTT events quickly
                 event = self.mqtt.get_rx(timeout=0.05)
                 if event is not None:
                     self.mqtt_handle(event)
 
                 # Process a few CAN frames quickly
-                can_msg = self.can.get_rx(timeout=0.05)
-                if can_msg is not None:
-                    self.can_handle(can_msg)
+                if self.can is not None and self._can_available:
+                    can_msg = self.can.get_rx(timeout=0.05)
+                    if can_msg is not None:
+                        self.can_handle(can_msg)
 
                 # Optional heartbeat/status every 1s
                 now = time.time()
