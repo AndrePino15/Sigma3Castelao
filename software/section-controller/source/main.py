@@ -66,8 +66,9 @@ def main() -> int:
     def _handle_shutdown(signum: int, _frame: object) -> None:
         LOGGER.info("Received signal %s, shutting down services", signum)
         shutdown_event.set()
-        controller.stop()
-        audio_service.stop()
+        # Request the bridge loop to exit; actual transport teardown stays in finally
+        # to avoid races where controller.stop() nulls transport objects mid-iteration.
+        controller.request_stop()
 
     signal.signal(signal.SIGINT, _handle_shutdown)
     if hasattr(signal, "SIGTERM"):

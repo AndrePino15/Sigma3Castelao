@@ -20,6 +20,7 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class MqttEvent:
     topic: str
+    ts_ms: int
     payload: Dict[str, Any]
     qos: int = 0
     retain: bool = False
@@ -109,8 +110,7 @@ class MqttClient:
         self._stop_event.clear()
         self._connected_event.clear()
 
-        print(f"[DEBUG] broker_host={self.broker_host!r} ({type(self.broker_host)}), "
-                f"broker_port={self.broker_port!r} ({type(self.broker_port)})")
+        LOGGER.info("Connecting to broker at IP: %s, PORT: %s", self.broker_host, self.broker_port)
 
         # connect() is non-blocking-ish, but actual connection is handled by loop_start()
         self._client.connect(self.broker_host, self.broker_port, keepalive=self.keepalive)
