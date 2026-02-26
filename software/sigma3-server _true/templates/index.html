@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Sigma3 Top-level Server</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}"/>
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Sigma3 Top-level Server</h1>
+    <div class="pill">Topic root: <b>safegoals/</b></div>
+  </header>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flashwrap">
+        {% for cat, msg in messages %}
+          <div class="flash {{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main class="grid">
+    <section class="card">
+      <h2>MQTT Topics (Scheme)</h2>
+      <div class="kv">
+        <div class="k">Control</div><div class="v mono">{{ topic_examples.control }}</div>
+        <div class="k">LED</div><div class="v mono">{{ topic_examples.led }}</div>
+        <div class="k">Status</div><div class="v mono">{{ topic_examples.status }}</div>
+        <div class="k">Emergency</div><div class="v mono">{{ topic_examples.emergency }}</div>
+      </div>
+      <p class="muted">Server publishes Control + LED + Emergency. Server only subscribes to Status.</p>
+    </section>
+
+    <section class="card">
+      <h2>Send Commands (multi-section supported)</h2>
+      <p class="muted">
+        Enter one or more sections (comma-separated), e.g. <span class="mono">1</span> or <span class="mono">1,2</span>.
+      </p>
+
+      <form class="row" method="post" action="/set_mode">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <select name="mode">
+          <option value="normal" {% if defaults.mode=='normal' %}selected{% endif %}>normal</option>
+          <option value="safety" {% if defaults.mode=='safety' %}selected{% endif %}>safety</option>
+        </select>
+        <input name="reason" value="{{ defaults.reason }}" placeholder="reason (safety)" />
+        <button class="btn blue" type="submit">Set</button>
+      </form>
+
+      <form class="row" method="post" action="/send_goal">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <select name="team">
+          <option value="home" {% if defaults.team=='home' %}selected{% endif %}>home</option>
+          <option value="away" {% if defaults.team=='away' %}selected{% endif %}>away</option>
+        </select>
+        <div class="spacer"></div>
+        <button class="btn green" type="submit">Send</button>
+      </form>
+
+      <form class="row" method="post" action="/send_vote">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <input name="vote_id" value="{{ defaults.vote_id }}" class="small" />
+        <input name="duration_s" type="number" value="{{ defaults.duration_s }}" min="5" max="120" class="small" />
+        <button class="btn yellow" type="submit">Vote</button>
+      </form>
+
+      <form class="row" method="post" action="/play_animation">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <input name="animation_id" value="{{ defaults.animation_id }}" />
+        <input name="anim_duration_s" type="number" step="0.1" value="{{ defaults.anim_duration_s }}" class="small" />
+        <button class="btn dark" type="submit">Play</button>
+      </form>
+
+      <form class="row" method="post" action="/send_emergency">
+        <input name="emergency_reason" value="{{ defaults.emergency_reason or '' }}" placeholder="emergency reason" />
+        <button class="btn red" type="submit">Emergency</button>
+      </form>
+      
+      
+      
+      
+      
+      
+      
+      <hr/>
+<h3>Live Audio (RTP/Opus over UDP)</h3>
+<p class="muted">
+  Target Pi: <span class="mono">{{ audio_target }}</span><br/>
+  Pi expects: <span class="mono">RTP OPUS payload=96 clock=48000</span>
+</p>
+
+<div class="row">
+  <form method="post" action="/audio_start">
+    <button class="btn dark" type="submit">Start Live Audio</button>
+  </form>
+
+  <form method="post" action="/audio_stop">
+    <button class="btn red" type="submit">Stop Live Audio</button>
+  </form>
+
+  <div class="spacer"></div>
+
+  {% if audio_status %}
+    <div class="pill">
+      Audio: <b>{{ "RUNNING" if audio_status.running else "STOPPED" }}</b>
+      {% if audio_status.pid %}(pid={{ audio_status.pid }}){% endif %}
+    </div>
+  {% endif %}
+</div>
+
+      <h3>LED Control</h3>
+      <form class="row" method="post" action="/led_mexican_wave">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <select name="direction">
+          <option value="left_to_right" {% if defaults.direction=='left_to_right' %}selected{% endif %}>left_to_right</option>
+          <option value="right_to_left" {% if defaults.direction=='right_to_left' %}selected{% endif %}>right_to_left</option>
+        </select>
+        <input name="speed_seats_per_s" type="number" value="{{ defaults.speed_seats_per_s }}" min="1" max="60" class="small" />
+        <input name="width_seats" type="number" value="{{ defaults.width_seats }}" min="1" max="10" class="small" />
+        <input name="hold_ms" type="number" value="{{ defaults.hold_ms }}" min="10" max="2000" class="small" />
+        <span class="mono tiny">RGB</span>
+        <input name="r" type="number" value="{{ defaults.r }}" min="0" max="255" class="tiny" />
+        <input name="g" type="number" value="{{ defaults.g }}" min="0" max="255" class="tiny" />
+        <input name="b" type="number" value="{{ defaults.b }}" min="0" max="255" class="tiny" />
+        <button class="btn purple" type="submit">Mexican Wave</button>
+      </form>
+
+      <form class="row" method="post" action="/led_sparkle">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <input name="spark_duration_ms" type="number" value="{{ defaults.spark_duration_ms }}" min="100" max="60000" class="small" />
+        <input name="spark_density" type="number" step="0.01" value="{{ defaults.spark_density }}" min="0.01" max="1.00" class="small" />
+        <span class="mono tiny">RGB</span>
+        <input name="r" type="number" value="{{ defaults.r }}" min="0" max="255" class="tiny" />
+        <input name="g" type="number" value="{{ defaults.g }}" min="0" max="255" class="tiny" />
+        <input name="b" type="number" value="{{ defaults.b }}" min="0" max="255" class="tiny" />
+        <button class="btn purple" type="submit">Sparkle</button>
+      </form>
+
+      <form class="row" method="post" action="/led_set_pixel">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <span class="mono">row</span><input name="pix_row" type="number" value="{{ defaults.pix_row }}" min="1" max="200" class="small" />
+        <span class="mono">col</span><input name="pix_col" type="number" value="{{ defaults.pix_col }}" min="1" max="200" class="small" />
+        <input name="pix_hold_ms" type="number" value="{{ defaults.pix_hold_ms }}" min="10" max="5000" class="small" />
+        <span class="mono tiny">RGB</span>
+        <input name="r" type="number" value="{{ defaults.r }}" min="0" max="255" class="tiny" />
+        <input name="g" type="number" value="{{ defaults.g }}" min="0" max="255" class="tiny" />
+        <input name="b" type="number" value="{{ defaults.b }}" min="0" max="255" class="tiny" />
+        <button class="btn purple" type="submit">Set Pixel</button>
+      </form>
+    </section>
+
+    <section class="card wide">
+      <h2>Status (from Pi) — safegoals/section/&lt;id&gt;/status</h2>
+      {% if section_rows|length == 0 %}
+        <p class="muted">No status received yet.</p>
+      {% else %}
+        <table>
+          <thead><tr><th>Section</th><th>Payload</th></tr></thead>
+          <tbody>
+            {% for row in section_rows %}
+              <tr>
+                <td><b>{{ row.section_id }}</b></td>
+                <td class="mono">{{ row.payload }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section class="card wide">
+      <div class="previewHeader">
+        <h2>Stadium Preview (Ellipse + Section Wedges + Seat LEDs)</h2>
+        <div class="muted">Preview reacts instantly to LED commands (software simulator).</div>
+      </div>
+      <div class="previewWrap">
+        <canvas id="stadiumCanvas" width="980" height="420"></canvas>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
