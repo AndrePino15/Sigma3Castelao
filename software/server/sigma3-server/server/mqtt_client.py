@@ -1,52 +1,50 @@
-from __future__ import annotations
-import json
-import logging
-from typing import Any, Dict
-import paho.mqtt.client as mqtt
-from .config import Config
-from . import state
+"""MQTT client wrapper (paho-mqtt).
 
-log = logging.getLogger("sigma3.mqtt")
+- Connects to broker
+- Subscribes to status wildcard topic
+- Calls state.update_telemetry() when status messages arrive
+"""
+import json
+import threading
+from typing import Any, Callable, Optional
+
+import paho.mqtt.client as mqtt
+
+from .runtime_config import RuntimeConfig
+from . import state
+from .mqtt_topics import status_wildcard
 
 class MqttClient:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: RuntimeConfig):
         self.cfg = cfg
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        if cfg.mqtt_username:
-            self.client.username_pw_set(cfg.mqtt_username, cfg.mqtt_password)
-        self.client.on_connect = self._on_connect
-        self.client.on_message = self._on_message
-        self.client.on_disconnect = self._on_disconnect
-        self._started = False
+        self._client = mqtt.Client()
+        self._thread: Optional[threading.Thread] = None
+
+        self._client.on_connect = self._on_connect
+        self._client.on_message = self._on_message
 
     def start(self) -> None:
-        if self._started:
-            return
-        self.client.connect(self.cfg.mqtt_host, self.cfg.mqtt_port, keepalive=30)
-        self.client.loop_start()
-        self._started = True
-        log.info("MQTT loop started")
+        # Connect and start network loop in background.
+        self._client.connect(self.cfg.mqtt_host, self.cfg.mqtt_port, keepalive=30)
+        self._client.loop_start()
 
-    def publish(self, topic: str, payload: Dict[str, Any], qos: int = 0, retain: bool = False) -> None:
-        data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        self.client.publish(topic, data, qos=qos, retain=retain)
-        log.info("Published to %s: %s", topic, data)
+    def publish(self, topic: str, msg: Any) -> None:
+        payload = json.dumps(msg)
+        self._client.publish(topic, payload=payload, qos=0, retain=False)
 
-    def _on_connect(self, client: mqtt.Client, userdata: Any, flags: Dict[str, Any], reason_code: int, properties=None):
-        if reason_code == 0:
-            log.info("Connected to broker %s:%s", self.cfg.mqtt_host, self.cfg.mqtt_port)
-            client.subscribe(self.cfg.mqtt_telemetry_topic)
-            log.info("Subscribed to telemetry: %s", self.cfg.mqtt_telemetry_topic)
-        else:
-            log.error("Failed to connect, reason_code=%s", reason_code)
+    def _on_connect(self, client, userdata, flags, rc):
+        # Subscribe to status/telemetry only (per teammate message).
+        client.subscribe(status_wildcard())
 
-    def _on_disconnect(self, client: mqtt.Client, userdata: Any, reason_code: int, properties=None):
-        log.warning("Disconnected from MQTT broker (reason_code=%s)", reason_code)
-
-    def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
+    def _on_message(self, client, userdata, msg):
+        # Status topic is safegoals/section/<id>/status
         try:
-            payload = json.loads(msg.payload.decode("utf-8", errors="replace"))
-            if isinstance(payload, dict):
-                state.update_from_telemetry(payload)
-        except Exception as e:
-            log.exception("Bad telemetry on %s: %s", msg.topic, e)
+            topic = msg.topic
+            parts = topic.split("/")
+            # parts: ["safegoals","section","<id>","status"]
+            section_id = parts[2] if len(parts) >= 4 else "?"
+            data = json.loads(msg.payload.decode("utf-8"))
+            state.update_telemetry(section_id, data)
+        except Exception:
+            # swallow errors in demo; you can log later
+            return

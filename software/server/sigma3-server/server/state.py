@@ -1,46 +1,43 @@
-from __future__ import annotations
-import threading
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+"""In-memory state for the demo server.
 
-@dataclass
-class SectionStatus:
-    section_id: str
-    last_ts: int = 0
-    occupancy: int = 0
-    votes: Dict[str, Any] = field(default_factory=dict)
-    heartbeat: bool = False
-    alerts: List[str] = field(default_factory=list)
+- last_inputs: remembers the last values you typed in forms
+- telemetry: latest status message per section
+- preview_event: last LED preview event pushed to the browser
+"""
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
+import threading
 
 _lock = threading.Lock()
-_sections: Dict[str, SectionStatus] = {}
 
-def update_from_telemetry(payload: Dict[str, Any]) -> None:
-    section_id = str(payload.get("section_id", "")).strip()
-    if not section_id:
-        return
+last_inputs: Dict[str, Dict[str, Any]] = {}  # form_name -> fields dict
+telemetry_by_section: Dict[str, Dict[str, Any]] = {}
+preview_event: Optional[Dict[str, Any]] = None
+
+def set_last_inputs(form_name: str, fields: Dict[str, Any]) -> None:
     with _lock:
-        s = _sections.get(section_id) or SectionStatus(section_id=section_id)
-        s.last_ts = int(payload.get("ts_ms", s.last_ts) or s.last_ts)
-        s.occupancy = int(payload.get("occupancy", s.occupancy) or s.occupancy)
-        s.votes = payload.get("votes", s.votes) or s.votes
-        s.heartbeat = bool(payload.get("heartbeat", True))
-        s.alerts = list(payload.get("alerts", s.alerts) or s.alerts)
-        _sections[section_id] = s
+        last_inputs[form_name] = dict(fields)
 
-def get_all_sections() -> List[SectionStatus]:
+def get_last_inputs(form_name: str) -> Dict[str, Any]:
     with _lock:
-        return list(_sections.values())
+        return dict(last_inputs.get(form_name, {}))
 
-# Preview state (latest LED command)
-_preview_lock = threading.Lock()
-_preview_led_command: Optional[Dict[str, Any]] = None
+def update_telemetry(section_id: str, payload: Dict[str, Any]) -> None:
+    with _lock:
+        telemetry_by_section[section_id] = payload
 
-def set_preview_led_command(cmd: Dict[str, Any]) -> None:
-    global _preview_led_command
-    with _preview_lock:
-        _preview_led_command = cmd
+def get_all_telemetry() -> Dict[str, Dict[str, Any]]:
+    with _lock:
+        return dict(telemetry_by_section)
 
-def get_preview_led_command() -> Optional[Dict[str, Any]]:
-    with _preview_lock:
-        return _preview_led_command
+def set_preview_event(evt: Dict[str, Any]) -> None:
+    with _lock:
+        global preview_event
+        preview_event = dict(evt)
+
+def pop_preview_event() -> Optional[Dict[str, Any]]:
+    with _lock:
+        global preview_event
+        evt = preview_event
+        preview_event = None
+        return evt
