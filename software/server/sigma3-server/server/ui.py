@@ -65,6 +65,7 @@ def index():
         "led": "safegoals/section/<section_id>/led",
         "status": "safegoals/section/<section_id>/status",
         "emergency": "safegoals/emergency",
+        "clock": "safegoals/show/clock",
     }
 
     # Render with persisted values (if any), otherwise defaults.
@@ -87,6 +88,14 @@ def index():
         "pix_row": 1,
         "pix_col": 1,
         "pix_hold_ms": 500,
+        "cue_animation_id": "traveling_wave",
+        "cue_duration_ms": 8000,
+        "cue_loop": "false",
+        "cue_dx": 1.0,
+        "cue_dy": 0.0,
+        "cue_speed": 8.0,
+        "cue_seed": 42,
+        "cue_id": "",
 
         # Live audio defaults (server->Pi)
         "audio_ip": getattr(cfg, "audio_target_ip", "172.20.10.2"),
@@ -94,7 +103,7 @@ def index():
     }
 
     # Merge last inputs from various forms
-    for form in ["mode", "goal", "vote", "animation", "led_wave", "led_sparkle", "led_pixel", "emergency", "audio"]:
+    for form in ["mode", "goal", "vote", "animation", "led_wave", "led_sparkle", "led_pixel", "led_cue", "emergency", "audio"]:
         defaults.update(state.get_last_inputs(form))
 
     telemetry = state.get_all_telemetry()
@@ -317,7 +326,7 @@ def led_set_pixel():
 
 @bp.post("/led_cue_start")
 def led_cue_start():
-    mqttc = current_app.config["SIGMA3_MQTT"]
+    cfg = current_app.config["SIGMA3_CFG"]
     section_ids_raw = _get_sections_from_form()
     sections = _expand_sections_for_actions(section_ids_raw)
 
@@ -345,13 +354,19 @@ def led_cue_start():
         "cue_dy": dy,
         "cue_speed": speed,
         "cue_seed": seed,
+        "cue_id": "",
     })
 
-    cue_service = CueService(mqttc)
+    cue_service = current_app.config.get("SIGMA3_LED_CUE") or CueService(current_app.config["SIGMA3_MQTT"])
     last_cue_id = None
     for sid in sections:
         last_cue_id = cue_service.publish_cue_start(
-            sid, animation_id, params, duration_ms=duration_ms, loop=loop
+            sid,
+            animation_id,
+            params,
+            duration_ms=duration_ms,
+            loop=loop,
+            lead_ms=getattr(cfg, "cue_start_lead_ms", 500),
         )
 
     if last_cue_id:
@@ -368,14 +383,14 @@ def led_cue_start():
 
 @bp.post("/led_cue_stop")
 def led_cue_stop():
-    mqttc = current_app.config["SIGMA3_MQTT"]
     section_ids_raw = _get_sections_from_form()
     sections = _expand_sections_for_actions(section_ids_raw)
     cue_id = (request.form.get("cue_id") or "").strip()
     if not cue_id:
         flash("cue_id is required", "err")
         return redirect(url_for("ui.index"))
-    cue_service = CueService(mqttc)
+    _persist("led_cue", {"section_ids": section_ids_raw, "cue_id": cue_id})
+    cue_service = current_app.config.get("SIGMA3_LED_CUE") or CueService(current_app.config["SIGMA3_MQTT"])
     for sid in sections:
         cue_service.publish_cue_stop(sid, cue_id)
     flash(f"LED cue stop sent to {section_ids_raw}", "ok")

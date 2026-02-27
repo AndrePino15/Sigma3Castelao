@@ -1,31 +1,54 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .clock_sync import ShowClockEstimator
 from .cue_store import CueStore
-from .models import Cue, SectionLedStatus
+from .models import Cue, SectionLedStatus, SeatMap, Rgb
 from .renderer import LedRenderer
 from .scheduler import FixedRateCanScheduler
 
 
 class LedRuntime:
     """Incremental LED runtime skeleton; safe no-op until seat maps/CAN callback are wired."""
-
     def __init__(self, section_id: int) -> None:
         """Create runtime state for one section controller instance."""
-
         self.section_id = int(section_id)
         self.clock = ShowClockEstimator()
         self.cues = CueStore()
         self.renderer = LedRenderer()
         self.scheduler = FixedRateCanScheduler()
         self._last_scheduler_tick_ms: Optional[int] = None
+        self._last_sent_frames = 0
+        self._configured = False
+        self._emergency_override = False
         self._status = SectionLedStatus(engine="initialized")
 
-    def handle_mqtt_led_command(self, payload: Dict[str, Any]) -> None:
-        """Handle versioned LED cue commands received from MQTT."""
+    def configure(
+        self,
+        *,
+        seat_map: SeatMap,
+        send_can: Callable[[Any], None],
+        vote_request_for_node: Callable[[int], bool],
+        reply_request_for_node: Callable[[int], bool],
+        on_scheduler_tick_start: Optional[Callable[[int], None]] = None,
+        render_mode: str = "seat",
+    ) -> None:
+        """Bind runtime to seat map and CAN scheduler callbacks."""
+        self.renderer.seat_map = seat_map
+        self.renderer.render_mode = render_mode if render_mode in ("seat", "pixel") else "seat"
+        self.scheduler = FixedRateCanScheduler(
+            seat_map=seat_map,
+            send_can=send_can,
+            vote_request_for_node=vote_request_for_node,
+            reply_request_for_node=reply_request_for_node,
+            on_tick_start=on_scheduler_tick_start,
+        )
+        self._configured = True
 
+    def handle_mqtt_led_command(self, payload: Dict[str, Any]) -> None:
+        """Handle versioned LED cue commands received from MQTT. Create Cue from received messages."""
+        # make sure we are working with the expected json schema
         inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
         if not isinstance(inner, dict) or inner.get("schema") != "led.cue.v1":
             return
@@ -48,40 +71,67 @@ class LedRuntime:
             cue_id = str(inner.get("cue_id", ""))
             if cue_id:
                 self.cues.stop(cue_id)
+            else:
+                self.cues = CueStore()
 
     def handle_clock_sync(self, payload: Dict[str, Any]) -> None:
         """Update local show-clock estimator from a CLOCK_SYNC message."""
-
         # Runtime is clock-source agnostic; caller provides monotonic timestamp.
         import time
         self.clock.update_from_clock_sync(payload, time.monotonic())
 
+    def handle_emergency(self, enabled: bool) -> None:
+        """Enable/disable emergency override for LED rendering output."""
+        self._emergency_override = bool(enabled)
+
     def tick(self, now_monotonic_s: float) -> None:
         """Advance runtime and run a scheduler sweep whenever a 10 Hz slot changes."""
-
         show_time_ms = self.clock.show_time_ms(now_monotonic_s)
+        if not self._configured:
+            self._status.engine = "unconfigured"
+            self._status.show_time_ms = show_time_ms
+            self._status.offset_ms = self.clock.offset_ms()
+            self._status.notes = ["seat_map_or_can_not_bound"]
+            return
+
         scheduler_tick_ms = (show_time_ms // 100) * 100
         if self._last_scheduler_tick_ms != scheduler_tick_ms:
-            colors_now = self.renderer.render_frame(self.cues, scheduler_tick_ms)
-            colors_next = self.renderer.render_frame(self.cues, scheduler_tick_ms + 50)
-            self.scheduler.tick(colors_now, colors_next, scheduler_tick_ms)
+            if self._emergency_override:
+                colors_now = self._black_frame()
+                colors_next = colors_now
+            else:
+                colors_now = self.renderer.render_frame(self.cues, scheduler_tick_ms)
+                colors_next = self.renderer.render_frame(self.cues, scheduler_tick_ms + 50)
+            self._last_sent_frames = self.scheduler.tick(colors_now, colors_next, scheduler_tick_ms)
             self._last_scheduler_tick_ms = scheduler_tick_ms
+
         snap = self.cues.snapshot(show_time_ms)
         self._status.engine = "running"
         self._status.show_time_ms = show_time_ms
         self._status.offset_ms = self.clock.offset_ms()
         self._status.active_cue_ids = snap.active_cue_ids
         self._status.render_mode = self.renderer.render_mode
-        self._status.notes = ["skeleton_runtime"]
+        self._status.notes = [
+            "emergency_override" if self._emergency_override else "normal",
+            f"sent_frames_last_tick={self._last_sent_frames}",
+        ]
 
     def status_snapshot(self) -> Dict[str, Any]:
         """Return a serializable LED runtime status snapshot."""
-
         return {
             "engine": self._status.engine,
             "show_time_ms": self._status.show_time_ms,
             "clock_offset_ms": self._status.offset_ms,
             "active_cue_ids": list(self._status.active_cue_ids),
             "render_mode": self._status.render_mode,
+            "sent_frames_last_tick": self._last_sent_frames,
+            "scheduler_tick_ms": self._last_scheduler_tick_ms,
             "notes": list(self._status.notes),
         }
+
+    def _black_frame(self) -> Dict[int, Rgb]:
+        """Return an all-off frame for all seats in the current seat map."""
+        seat_map = self.scheduler.seat_map
+        if seat_map is None:
+            return {}
+        return {seat.seat_id: (0, 0, 0) for seat in seat_map.seats}

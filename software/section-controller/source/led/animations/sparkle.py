@@ -5,7 +5,6 @@ from typing import Any, Dict, Tuple
 
 def _hash32(v: int) -> int:
     """Fast deterministic 32-bit hash used for sparkle randomness."""
-
     v &= 0xFFFFFFFF
     v ^= (v >> 16)
     v = (v * 0x7FEB352D) & 0xFFFFFFFF
@@ -17,10 +16,9 @@ def _hash32(v: int) -> int:
 
 class SparkleAnimation:
     """Seeded deterministic sparkle animation."""
-
+    
     def render(self, x: float, y: float, t_ms: int, params: Dict[str, Any]) -> Tuple[int, int, int]:
         """Render one RGB sample of the sparkle pattern."""
-
         seed = int(params.get("seed", 1))
         seat_id = int(params.get("seat_id", int(x * 1000) ^ int(y * 1000)))
         density = float(params.get("density", 0.05))

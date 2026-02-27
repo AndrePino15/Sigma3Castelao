@@ -24,6 +24,8 @@ class RuntimeConfig:
     audio_input_backend: str
     audio_input_device: str
     audio_opus_bitrate: str
+    show_clock_period_ms: int
+    cue_start_lead_ms: int
 
 
 
@@ -50,6 +52,8 @@ def load_config() -> RuntimeConfig:
     audio_input_backend = os.getenv("AUDIO_INPUT_BACKEND", "")
     audio_input_device = os.getenv("AUDIO_INPUT_DEVICE", "")
     audio_opus_bitrate = os.getenv("AUDIO_OPUS_BITRATE", "64k")
+    show_clock_period_ms = int(os.getenv("SHOW_CLOCK_PERIOD_MS", "1000"))
+    cue_start_lead_ms = int(os.getenv("CUE_START_LEAD_MS", "500"))
 
     return RuntimeConfig(
         mqtt_host=mqtt_host,
@@ -63,4 +67,6 @@ def load_config() -> RuntimeConfig:
         audio_input_backend=audio_input_backend,
         audio_input_device=audio_input_device,
         audio_opus_bitrate=audio_opus_bitrate,
+        show_clock_period_ms=show_clock_period_ms,
+        cue_start_lead_ms=cue_start_lead_ms,
     )

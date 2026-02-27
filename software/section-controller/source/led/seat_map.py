@@ -9,7 +9,6 @@ from .models import SeatMap, SeatMapEntry
 
 def build_indexes(seat_map: SeatMap) -> SeatMap:
     """Build in-memory seat/node lookup dictionaries and validate uniqueness."""
-
     seat_map.by_seat_id = {}
     seat_map.by_node_id = {}
     seat_map.section_seat_ids = {}
@@ -26,7 +25,6 @@ def build_indexes(seat_map: SeatMap) -> SeatMap:
 
 def _parse_entries(entries: Iterable[dict]) -> List[SeatMapEntry]:
     """Parse raw JSON seat entries into typed SeatMapEntry objects."""
-
     parsed: List[SeatMapEntry] = []
     for row in entries:
         parsed.append(
@@ -43,7 +41,6 @@ def _parse_entries(entries: Iterable[dict]) -> List[SeatMapEntry]:
 
 def load_section_seat_map(path: str | Path, expected_section_id: int | None = None) -> SeatMap:
     """Load and validate a section seat map from JSON on disk."""
-
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     seat_map = SeatMap(
         version=str(raw.get("version", "v1")),

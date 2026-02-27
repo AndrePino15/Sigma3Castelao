@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "canvas_width": 1,
+  "canvas_height": 1,
+  "seats": [
+    {
+      "seat_id": 0,
+      "x": 0.0,
+      "y": 0.0,
+      "section_id": 1,
+      "node_id": 512
+    }
+  ]
+}

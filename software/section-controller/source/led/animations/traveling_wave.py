@@ -9,7 +9,6 @@ class TravelingWaveAnimation:
 
     def render(self, x: float, y: float, t_ms: int, params: Dict[str, Any]) -> Tuple[int, int, int]:
         """Render one RGB sample of the traveling-wave pattern."""
-
         dx = float(params.get("dx", 1.0))
         dy = float(params.get("dy", 0.0))
         speed = float(params.get("speed_units_per_s", 8.0))

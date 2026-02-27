@@ -16,5 +16,4 @@ _ANIMATIONS = {
 
 def get_animation(animation_id: str) -> AnimationProtocol:
     """Return the animation implementation for the provided animation_id."""
-
     return _ANIMATIONS.get(str(animation_id), _ANIMATIONS["sparkle"])

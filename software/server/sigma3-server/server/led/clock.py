@@ -10,9 +10,9 @@ from ..mqtt_topics import show_clock_topic
 
 class ShowClockPublisher:
     """
-    Skeleton publisher for periodic CLOCK_SYNC messages.
+    Publisher for periodic CLOCK_SYNC messages.
 
-    Not started by default; intended for later integration.
+    The server owns one instance and keeps it running in a background thread.
     """
 
     def __init__(self, mqtt_client, period_ms: int = 1000) -> None:

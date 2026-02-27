@@ -31,6 +31,7 @@
         <div class="k">LED</div><div class="v mono">{{ topic_examples.led }}</div>
         <div class="k">Status</div><div class="v mono">{{ topic_examples.status }}</div>
         <div class="k">Emergency</div><div class="v mono">{{ topic_examples.emergency }}</div>
+        <div class="k">Show Clock</div><div class="v mono">{{ topic_examples.clock }}</div>
       </div>
       <p class="muted">Server publishes Control + LED + Emergency. Server only subscribes to Status.</p>
     </section>
@@ -150,6 +151,27 @@
         <input name="g" type="number" value="{{ defaults.g }}" min="0" max="255" class="tiny" />
         <input name="b" type="number" value="{{ defaults.b }}" min="0" max="255" class="tiny" />
         <button class="btn purple" type="submit">Set Pixel</button>
+      </form>
+
+      <form class="row" method="post" action="/led_cue_start">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <input name="cue_animation_id" value="{{ defaults.cue_animation_id }}" placeholder="animation id" />
+        <input name="cue_duration_ms" type="number" value="{{ defaults.cue_duration_ms }}" min="100" max="600000" class="small" />
+        <select name="cue_loop">
+          <option value="false" {% if defaults.cue_loop=='false' %}selected{% endif %}>loop=false</option>
+          <option value="true" {% if defaults.cue_loop=='true' %}selected{% endif %}>loop=true</option>
+        </select>
+        <span class="mono tiny">dx</span><input name="cue_dx" type="number" step="0.1" value="{{ defaults.cue_dx }}" class="small" />
+        <span class="mono tiny">dy</span><input name="cue_dy" type="number" step="0.1" value="{{ defaults.cue_dy }}" class="small" />
+        <span class="mono tiny">speed</span><input name="cue_speed" type="number" step="0.1" value="{{ defaults.cue_speed }}" class="small" />
+        <span class="mono tiny">seed</span><input name="cue_seed" type="number" value="{{ defaults.cue_seed }}" class="small" />
+        <button class="btn purple" type="submit">Cue Start</button>
+      </form>
+
+      <form class="row" method="post" action="/led_cue_stop">
+        <input name="section_ids" value="{{ defaults.section_ids }}" class="med" />
+        <input name="cue_id" value="{{ defaults.cue_id }}" placeholder="cue_id to stop" />
+        <button class="btn purple" type="submit">Cue Stop</button>
       </form>
     </section>
 
