@@ -91,7 +91,7 @@ class MqttClient:
             # If it isn't JSON, we still forward something useful
             payload_obj = {"_raw": msg.payload.decode("utf-8", errors="replace")}
 
-        event = MqttEvent(topic=msg.topic, payload=payload_obj, qos=msg.qos, retain=msg.retain)
+        event = MqttEvent(topic=msg.topic, ts_ms=int(time.time() * 1000), payload=payload_obj, qos=msg.qos, retain=msg.retain)
 
         try:
             self.rx_queue.put_nowait(event)
