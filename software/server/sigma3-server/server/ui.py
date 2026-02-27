@@ -16,6 +16,8 @@ from . import state
 from .utils import parse_sections
 from . import messages
 from .mqtt_topics import control_topic, led_topic, emergency_topic
+from .led.cue_service import CueService
+from .led.preview_adapter import cue_to_preview_event
 
 bp = Blueprint("ui", __name__)
 
@@ -310,6 +312,73 @@ def led_set_pixel():
     })
 
     flash(f"LED Pixel set sent to {section_ids_raw} (row={row}, col={col})", "ok")
+    return redirect(url_for("ui.index"))
+
+
+@bp.post("/led_cue_start")
+def led_cue_start():
+    mqttc = current_app.config["SIGMA3_MQTT"]
+    section_ids_raw = _get_sections_from_form()
+    sections = _expand_sections_for_actions(section_ids_raw)
+
+    animation_id = request.form.get("cue_animation_id", "traveling_wave")
+    duration_ms = int(request.form.get("cue_duration_ms", "8000") or 8000)
+    loop = (request.form.get("cue_loop", "false").lower() == "true")
+    dx = float(request.form.get("cue_dx", "1.0") or 1.0)
+    dy = float(request.form.get("cue_dy", "0.0") or 0.0)
+    speed = float(request.form.get("cue_speed", "8.0") or 8.0)
+    seed = int(request.form.get("cue_seed", "42") or 42)
+    params = {
+        "dx": dx,
+        "dy": dy,
+        "speed_units_per_s": speed,
+        "palette": [[0, 0, 0], [0, 120, 255]],
+        "seed": seed,
+    }
+
+    _persist("led_cue", {
+        "section_ids": section_ids_raw,
+        "cue_animation_id": animation_id,
+        "cue_duration_ms": duration_ms,
+        "cue_loop": str(loop).lower(),
+        "cue_dx": dx,
+        "cue_dy": dy,
+        "cue_speed": speed,
+        "cue_seed": seed,
+    })
+
+    cue_service = CueService(mqttc)
+    last_cue_id = None
+    for sid in sections:
+        last_cue_id = cue_service.publish_cue_start(
+            sid, animation_id, params, duration_ms=duration_ms, loop=loop
+        )
+
+    if last_cue_id:
+        state.set_preview_event(cue_to_preview_event(sections, {
+            "cue_id": last_cue_id,
+            "animation_id": animation_id,
+            "duration_ms": duration_ms,
+            "loop": loop,
+            "params": params,
+        }))
+    flash(f"LED cue '{animation_id}' sent to {section_ids_raw}", "ok")
+    return redirect(url_for("ui.index"))
+
+
+@bp.post("/led_cue_stop")
+def led_cue_stop():
+    mqttc = current_app.config["SIGMA3_MQTT"]
+    section_ids_raw = _get_sections_from_form()
+    sections = _expand_sections_for_actions(section_ids_raw)
+    cue_id = (request.form.get("cue_id") or "").strip()
+    if not cue_id:
+        flash("cue_id is required", "err")
+        return redirect(url_for("ui.index"))
+    cue_service = CueService(mqttc)
+    for sid in sections:
+        cue_service.publish_cue_stop(sid, cue_id)
+    flash(f"LED cue stop sent to {section_ids_raw}", "ok")
     return redirect(url_for("ui.index"))
 
 

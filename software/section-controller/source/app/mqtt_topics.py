@@ -21,6 +21,9 @@ def section_root(section_id: int) -> str:
 def emergency_topic() -> str:
     return f"{ROOT}/emergency"
 
+def show_clock_topic() -> str:
+    return f"{ROOT}/show/clock"
+
 def control_topic(section_id: int) -> str:
     return f"{section_root(section_id)}/control"
 

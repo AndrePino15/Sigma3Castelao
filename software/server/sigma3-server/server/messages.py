@@ -36,6 +36,43 @@ def build_emergency(reason: str) -> Dict[str, Any]:
     return wrap("emergency", {"reason": reason})
 
 # -------- LED --------
+def build_clock_sync(seq: int, show_time_ms: int, server_unix_ms: Optional[int] = None) -> Dict[str, Any]:
+    payload = {
+        "schema": "show.clock.v1",
+        "seq": int(seq),
+        "show_time_ms": int(show_time_ms),
+    }
+    payload["server_unix_ms"] = int(now_ms() if server_unix_ms is None else server_unix_ms)
+    return wrap("clock_sync", payload)
+
+def build_led_cue_start(
+    cue_id: str,
+    animation_id: str,
+    start_time_show_ms: int,
+    duration_ms: int,
+    loop: bool,
+    section_id: int,
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    return wrap("led", {
+        "schema": "led.cue.v1",
+        "cmd": "CUE_START",
+        "cue_id": cue_id,
+        "animation_id": animation_id,
+        "start_time_show_ms": int(start_time_show_ms),
+        "duration_ms": int(duration_ms),
+        "loop": bool(loop),
+        "scope": {"section_id": int(section_id)},
+        "params": dict(params),
+    })
+
+def build_led_cue_stop(cue_id: str) -> Dict[str, Any]:
+    return wrap("led", {
+        "schema": "led.cue.v1",
+        "cmd": "CUE_STOP",
+        "cue_id": cue_id,
+    })
+
 def build_led_mexican_wave(direction: str, speed_seats_per_s: int, width_seats: int, hold_ms: int, rgb: Dict[str, int]) -> Dict[str, Any]:
     return wrap("led", {
         "pattern": "mexican_wave",

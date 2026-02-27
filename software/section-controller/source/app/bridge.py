@@ -1,12 +1,16 @@
 import canbus.protocol as protocol
 from canbus.interface import CanInterface
 from app.mqtt_client import MqttClient, MqttEvent
-from app.mqtt_topics import control_topic, emergency_topic, led_topic, status_topic
+from app.mqtt_topics import control_topic, emergency_topic, led_topic, status_topic, show_clock_topic
 from canbus.types import MessageTypes, OperationMode
+try:
+    from led.runtime import LedRuntime
+except Exception:  # pragma: no cover - keep bridge startup tolerant during migration
+    LedRuntime = None  # type: ignore[assignment]
 
 import can
 import logging
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional
 import time
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +49,7 @@ class Bridge:
         # QoS: emergency/control = 1 (more reliable), LED = 0 (best-effort)
         self.subscriptions: list[tuple[str, int]] = [(control_topic(self.section_id), 0),
                                               (led_topic(self.section_id), 0), 
+                                              (show_clock_topic(), 0),
                                               (emergency_topic(), 1)]
         
         # Where this controller publishes aggregated status
@@ -56,6 +61,10 @@ class Bridge:
         self._can_recovery_backoff_s = CAN_RECOVERY_BACKOFF_MIN_S
         self._can_recovery_attempts = 0
         self._can_failure_logged = False
+        self._known_node_ids: set[int] = set()
+        self._vote_request_sweep_pending = False
+        self._vote_request_nodes_remaining: set[int] = set()
+        self._led_runtime: Optional[Any] = None
 
 # ================Methods for starting and stoping the controller================
 
@@ -155,6 +164,15 @@ class Bridge:
         topic = event.topic
         payload = event.payload or {}
 
+        if topic == show_clock_topic():
+            runtime = self._get_led_runtime()
+            if runtime is not None:
+                try:
+                    runtime.handle_clock_sync(payload)
+                except Exception:
+                    LOGGER.exception("LED runtime failed to handle clock sync payload")
+            return
+
         # Emergency topic is global
         if topic == emergency_topic():
             # Enter safety mode immediately
@@ -174,6 +192,14 @@ class Bridge:
         # Shouldn't be too much of a problem
         # Section specific topics
         if topic == led_topic(self.section_id):
+            if self._is_versioned_led_cue_payload(payload):
+                runtime = self._get_led_runtime()
+                if runtime is not None:
+                    try:
+                        runtime.handle_mqtt_led_command(payload)
+                    except Exception:
+                        LOGGER.exception("LED runtime failed to handle cue payload")
+                return
             # Ignore LED commands in SAFETY mode
             if self.mode == OperationMode.SAFETY:
                 return
@@ -192,31 +218,70 @@ class Bridge:
                 return
 
             r, g, b = rgb
-            msg = protocol.encode_led_set(seat=seat, r=r, g=g, b=b)
+            node_id = protocol.seat_cmd_id(seat)
+            self._known_node_ids.add(node_id)
+            msg = protocol.encode_led_set(
+                seat=seat,
+                r=r,
+                g=g,
+                b=b,
+                vote_request=self._consume_vote_request_for_node(node_id),
+                reply_request=False,
+            )
             self._send_can_message(msg, context=f"LED command topic {topic}")
             return
 
+    def _get_led_runtime(self) -> Optional[Any]:
+        if self._led_runtime is not None:
+            return self._led_runtime
+        if LedRuntime is None:
+            return None
+        try:
+            self._led_runtime = LedRuntime(section_id=self.section_id)
+        except Exception:
+            LOGGER.exception("Failed to initialize LED runtime")
+            self._led_runtime = None
+        return self._led_runtime
+
+    def _is_versioned_led_cue_payload(self, payload: Dict[str, Any]) -> bool:
+        schema = payload.get("schema")
+        if schema == "led.cue.v1":
+            return True
+        inner = payload.get("payload")
+        if isinstance(inner, dict) and inner.get("schema") == "led.cue.v1":
+            return True
+        return False
+
         if topic == control_topic(self.section_id):
+            # Supports both local legacy schema and server wrapped schema.
+            wrapped_type = payload.get("type")
+            wrapped_payload = payload.get("payload")
+            if isinstance(wrapped_type, str):
+                inner = wrapped_payload if isinstance(wrapped_payload, dict) else {}
+                if wrapped_type == "vote":
+                    self._arm_vote_request_sweep()
+                    return
+                if wrapped_type == "mode":
+                    self._apply_mode_value(inner.get("mode"))
+                    return
+                # Ignore unimplemented wrapped control message types for now.
+                return
+
             # Basic control schema examples:
             # {"cmd": "set_mode", "mode": "NORMAL"} or {"cmd":"safety", "enabled": true}
             cmd = payload.get("cmd")
 
             if cmd == "set_mode":
-                mode_str = payload.get("mode")
-                if mode_str == "NORMAL":
-                    self.mode = OperationMode.NORMAL
-                elif mode_str == "SAFETY":
-                    self.mode = OperationMode.SAFETY
-                elif mode_str == "ID_ASSIGNMENT":
-                    self.mode = OperationMode.ID_ASSIGNMENT
-                elif mode_str == "DEGRADED":
-                    self.mode = OperationMode.DEGRADED
+                self._apply_mode_value(payload.get("mode"))
                 return
 
             if cmd == "safety":
                 enabled = payload.get("enabled")
                 if isinstance(enabled, bool):
                     self.mode = OperationMode.SAFETY if enabled else OperationMode.NORMAL
+                return
+            if cmd == "vote":
+                self._arm_vote_request_sweep()
                 return
             return
 
@@ -225,10 +290,51 @@ class Bridge:
         Return the CAN hardware filters used by this controller.
         """
         return [
-            {"can_id": protocol.SEAT_TO_CTRL_BASE, "can_mask": 0x700, "extended": False},
+            {"can_id": protocol.NODE_REPLY_ID, "can_mask": 0x7FF, "extended": False},
             {"can_id": protocol.EMERGENCY_ID, "can_mask": 0x7FF, "extended": False},
             {"can_id": protocol.BROADCAST_CMD_ID, "can_mask": 0x7FF, "extended": False},
         ]
+
+    def _apply_mode_value(self, mode_value: Any) -> None:
+        if not isinstance(mode_value, str):
+            return
+        mode_str = mode_value.strip().upper()
+        if mode_str == "NORMAL":
+            self.mode = OperationMode.NORMAL
+        elif mode_str == "SAFETY":
+            self.mode = OperationMode.SAFETY
+        elif mode_str == "ID_ASSIGNMENT":
+            self.mode = OperationMode.ID_ASSIGNMENT
+        elif mode_str == "DEGRADED":
+            self.mode = OperationMode.DEGRADED
+
+    def _arm_vote_request_sweep(self) -> None:
+        self._vote_request_sweep_pending = True
+        self._vote_request_nodes_remaining = set(self._known_node_ids)
+        LOGGER.info(
+            "Armed vote request pulse (known_nodes=%s)",
+            len(self._vote_request_nodes_remaining),
+        )
+
+    def _consume_vote_request_for_node(self, node_id: int) -> bool:
+        """
+        Set vote_request=1 once per known node on its next outbound frame.
+        If no known nodes are registered yet, pulse the next outbound node frame.
+        """
+        if not self._vote_request_sweep_pending:
+            return False
+
+        if not self._vote_request_nodes_remaining:
+            self._vote_request_sweep_pending = False
+            return True
+
+        if node_id not in self._vote_request_nodes_remaining:
+            return False
+
+        self._vote_request_nodes_remaining.discard(node_id)
+        if not self._vote_request_nodes_remaining:
+            self._vote_request_sweep_pending = False
+        return True
 
     def _set_can_unavailable(self, reason: str) -> None:
         """
@@ -332,20 +438,21 @@ class Bridge:
             LOGGER.info("Unable to decode receive CAN msg: %s", msg)
             return
 
-        # Publish a compact status message
-        # (You can later make topic-per-seat; for now keep it single status topic)
+        node_id = decoded.get("node_id")
+        if isinstance(node_id, int):
+            self._known_node_ids.add(node_id)
+
         payload: Dict[str, Any] = {
             "section": self.section_id,
+            "type": "seat_event",
             "mode": self.mode.name,
-            "seat": decoded.get("seat"),
-            "type": decoded.get("type"),
+            "seat_id": decoded.get("seat"),
+            "node_id": node_id,
+            "sos": bool(decoded.get("sos", False)),
+            "occupied": bool(decoded.get("occupied", False)),
+            "voted": bool(decoded.get("voted", False)),
+            "vote": decoded.get("vote"),
         }
-
-        # Add known decoded fields if present
-        if "occupied" in decoded:
-            payload["occupied"] = decoded["occupied"]
-        if "uptime_s" in decoded:
-            payload["uptime_s"] = decoded["uptime_s"]
 
         try:
             self.mqtt.publish_json(self.status_topic, payload, qos=0, retain=False)
@@ -382,12 +489,19 @@ class Bridge:
                     if can_msg is not None:
                         self.can_handle(can_msg)
 
+                runtime = self._led_runtime
+                if runtime is not None:
+                    try:
+                        runtime.tick(time.monotonic())
+                    except Exception:
+                        LOGGER.exception("LED runtime tick failed")
+
                 # Optional heartbeat/status every 1s
                 now = time.time()
                 if self.mqtt.is_connected() and (now - last_heartbeat) >= 1.0:
                     self.mqtt.publish_json(
                         self.status_topic,
-                        {"section": self.section_id, "mode": self.mode.name, "alive": True},
+                        {"section": self.section_id, "type": "section_heartbeat", "mode": self.mode.name, "alive": True},
                         qos=0,
                         retain=False,
                     )
