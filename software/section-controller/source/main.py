@@ -27,7 +27,7 @@ def main() -> int:
         LOGGER.error("Invalid SC_ID=%r (expected integer)", raw_section_id)
         return 2
 
-    broker_host = os.getenv("SC_BROKER_HOST", "172.20.10.4").strip() or "172.20.10.4"
+    broker_host = os.getenv("SC_BROKER_HOST", "172.20.10.5").strip() or "172.20.10.5"
     broker_port_raw = os.getenv("SC_BROKER_PORT", "1883").strip() or "1883"
     try:
         broker_port = int(broker_port_raw)
