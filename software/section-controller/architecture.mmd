@@ -1,0 +1,72 @@
+flowchart LR
+  %% External systems
+  subgraph EXT["External Entities"]
+    Server["Server<br/>(MQTT Broker / Controller)"]
+    CANBus["CAN Bus"]
+    Seats["Seat Nodes"]
+    RTPSource["RTP Audio Source"]
+    Speaker["Local Speaker / Amplifier"]
+  end
+
+  %% Raspberry Pi runtime
+  subgraph PI["Raspberry Pi - Section Controller"]
+    Main["main.py<br/>Entrypoint / Orchestrator"]
+    Bridge["Bridge.run()<br/>Main Thread"]
+
+    subgraph MQTT["MQTT Boundary"]
+      MqttClient["MqttClient<br/>(paho-mqtt)"]
+      MqttRxThread["MQTT RX Thread<br/>(paho loop_start network loop)"]
+      MqttRxQ[("MQTT RX Queue")]
+    end
+
+    subgraph CAN["CAN Boundary"]
+      CanIF["CanInterface<br/>(python-can / SocketCAN)"]
+      CanRxThread["CAN RX Thread<br/>(can-rx)"]
+      CanRxQ[("CAN RX Queue")]
+      CanProto["CAN Protocol Codec<br/>(encode/decode)"]
+    end
+
+    subgraph LED["LED Runtime / Timing"]
+      LedRuntime["LedRuntime<br/>(CueStore + Renderer)"]
+      Clock["ShowClockEstimator<br/>(show.clock.v1 sync)"]
+      Scheduler["FixedRateCanScheduler<br/>(10 Hz tick, 2 subframes)"]
+    end
+
+    subgraph AUDIO["Audio Subsystem"]
+      AudioSvc["AudioService Supervisor"]
+      AudioMon["AudioServiceMonitor Thread"]
+      AudioWorker["audio.runner Worker Process<br/>(GStreamer gst-launch + ALSA)"]
+    end
+  end
+
+  Main -->|start/stop| Bridge
+  Main -->|start/stop| AudioSvc
+
+  Server -->|MQTT commands/events:<br/>control, led, emergency, show/clock| MqttClient
+  MqttClient -->|network callback| MqttRxThread
+  MqttRxThread -->|enqueue events| MqttRxQ
+  Bridge -->|dequeue events| MqttRxQ
+  Bridge -->|status/heartbeat telemetry| MqttClient
+  MqttClient -->|MQTT publish| Server
+
+  Bridge -->|tick() + cue commands| LedRuntime
+  Bridge -->|clock-sync payload| Clock
+  Clock -->|show_time_ms| LedRuntime
+  LedRuntime -->|colors(t), colors(t+50ms)| Scheduler
+  Scheduler -->|encode node frames| CanProto
+
+  Bridge -->|legacy LED/emergency commands| CanProto
+  CanProto -->|TX CAN frames| CanIF
+  CanIF -->|SocketCAN I/O| CANBus
+  Seats <-->|seat command/reply frames| CANBus
+  CANBus -->|RX frames| CanIF
+  CanIF -->|recv loop| CanRxThread
+  CanRxThread -->|enqueue frames| CanRxQ
+  Bridge -->|dequeue frames| CanRxQ
+  Bridge -->|decode replies| CanProto
+
+  AudioSvc -->|spawn/stop/restart| AudioWorker
+  AudioSvc --> AudioMon
+  AudioMon -->|monitor + backoff restart| AudioWorker
+  RTPSource -->|RTP/Opus audio packets| AudioWorker
+  AudioWorker -->|audio output| Speaker

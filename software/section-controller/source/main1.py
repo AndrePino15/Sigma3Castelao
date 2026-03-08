@@ -5,7 +5,7 @@ import time
 s=True
 if s:
     # creation of controller instance 
-    section_id = 12345
+    section_id = 1
     IP_address = "172.20.10.4"
 
     client = mqtt.MqttClient(broker_host= IP_address,
