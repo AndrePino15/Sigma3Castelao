@@ -62,7 +62,7 @@ This architecture allows the system to scale from a single prototype to tens of 
 
 ## System Architecture
 
-![System Architecture Block Diagram](docs/system_architecture.png)
+<img width="2939" height="1098" alt="system_architecture" src="https://github.com/user-attachments/assets/4df1f38c-d02d-453f-87de-59d5d8f995f1" />
 
 The system is divided into four major subsystems:
 
