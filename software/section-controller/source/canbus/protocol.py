@@ -74,7 +74,7 @@ def encode_node_frame(
     data = [flags & 0xFF, 0, c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]]
     return can.Message(arbitration_id=int(node_id), data=data, is_extended_id=False)
 
-
+# this function isn't really used
 def encode_led_set(
     seat: int,
     r: int,

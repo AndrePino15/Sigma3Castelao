@@ -45,7 +45,6 @@ class CueStore:
 
     def snapshot(self, show_time_ms: int) -> CueStoreSnapshot:
         """Return active/scheduled cue IDs for telemetry/debug use."""
-
         active = self.active_cues(show_time_ms)
         scheduled = [c.cue_id for c in self._cues.values() if show_time_ms < c.start_time_show_ms]
         return CueStoreSnapshot(active_cue_ids=[c.cue_id for c in active], scheduled_cue_ids=scheduled)

@@ -7,8 +7,6 @@ from typing import Optional
 @dataclass
 class ClockSample:
     """One accepted clock-sync sample and its derived local offset."""
-
-    seq: int
     seq: int
     show_time_ms: int
     local_monotonic_ms: float
