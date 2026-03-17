@@ -1,0 +1,108 @@
+**********************************************
+* LM386/NJM386 spice subckt model. 
+*
+* Developed for EasyEDA by:
+*    signality.co.uk
+* 
+* Subckt based on the schematic shown in the 
+* NJM386 datasheet:
+*   http://www.njr.com/semicon/PDF/NJM386_E.pdf
+* Specifications based on the above and:
+*   http://www.ti.com/lit/ds/symlink/lm386.pdf
+*
+* Gain accuracy, output voltage self-centring, 
+* typical quiescent and input bias currents 
+* and unloaded bandwidth are modelled. 
+*
+* Output swing is optimistic with < 8 Ohm load 
+* resistances. The reason for this is unclear.
+* If anyone has scope traces of the LM386 output 
+* voltage driving into clipping with loads of 
+* between 4 - 16 Ohms please contact: 
+*   support@easyeda.com
+*
+* Last edited 150611
+**********************************************
+*
+* IC pins:       2   3   7   1   8   5   6   4
+*                |   |   |   |   |   |   |   |
+.subckt LM386EE inn inp byp  g1  g8 out  vs gnd
+*
+.param
++ Rbval = 28.25k
++ Re1val = 100
++ Re2val = 1k
++ Re3val = 4
++ Rcval = 10
+**
+* Input stage
+Q1 0 INN q1e 0 PNP1
+R1 INN 0 50k
+Q2 0 INP q2e 0 PNP1
+R2 INP 0 50k
+Q3 0 q1e q4e 0 PNP1
+Q4 q4c q1e q4e 0 PNP1
+Q5 0 q2e q6e 0 PNP1
+Q6 q15b q2e q6e 0 PNP1
+**
+* Input stage current mirror
+Q7 q4c q4c 0 0 NPN
+Q8 q15b q4c 0 0 NPN
+**
+* Input bias curent and gain setting resistors
+R3 q4e q1e {Rbval}
+R4 g0 q4e {Re1val}
+R5 q2e q6e {Rbval}
+R6 G1 q6e {Re1val}
+R7 G8 g0 150
+R8 G1 G8 1.35k
+R9 OUT G1 15k
+R10 BYP g0 15k
+R11 q10c BYP 15k
+**
+* Tail and PNP emitter follower current mirror
+Q9 0 q10c q10b 0 PNP1
+Q10 q10c q10b VS 0 PNP1
+Q11 q11c q10b VS 0 PNP1
+Q12 q12c q10b VS 0 PNP1
+** 
+* Emitter follower buffers and 
+* quiescent current control
+Q13 0 q4c q11c 0 PNP2
+Q14 q18b q11c q14e 0 NPN
+R12 q14e 0 {Re2val}
+Q15 0 q15b q12c 0 PNP2
+Q16 q18b q12c q17b 0 NPN
+**
+* Voltage gain stage
+Q17 q23b q17b 0 0 NPN
+C2 q23b 0 1p
+**
+* Crossover distortion/quiescent current mirror.
+Q18 q18b q18b VS 0 PNP2
+Q19 comp q18b VS 0 PNP2
+Q20 q25b q18b VS 0 PNP2
+**
+* Crossover drop diodes and compensation cap.
+Q21 comp comp q22b 0 NPN 5
+C1 comp q15b 15p
+R13 q25b comp {Rcval}
+Q22 q25b q22b q23b 0 NPN 5
+**
+* Push-pull output stage with Sziklai pair.
+Q23 q24b q23b q23e 0 PNP2
+Q24 q23e q24b 0 0 NPN 100
+R14 OUT q23e {Re3val}
+Q25 VS q25b q25e 0 NPN 100
+R15 q25e OUT {Re3val}
+**
+* Models
+.model NPN NPN(IS=1E-14 VAF=100 BF=400 IKF=0.4 
++ XTB=1.5 BR=4 CJC=1E-12 ITF=1 VTF=2 XTF=3)
+.model PNP1 PNP(IS=1E-14 VAF=100 BF=100 IKF=0.4 
++ XTB=1.5 BR=4 CJC=1E-12 ITF=1 VTF=2 XTF=3)
+.model PNP2 PNP(IS=1E-14 VAF=100 BF=200 IKF=0.4 
+ +XTB=1.5 BR=4 CJC=1E-12 ITF=1 VTF=2 XTF=3)
+*
+.ends LM386EE
+**********************************************
